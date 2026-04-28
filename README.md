@@ -1,8 +1,7 @@
 # design-of-wind-farms
 Repo for the course work of the Technical University Munich (TUM) course: Design of wind farms in summer semester of 26.
 
-# Design of Wind Farms: Assignment 1
-
+### Design of Wind Farms: Assignment 1 ###
 ## Overview
 This repository contains the Python calculation script for Assignment 1: Basics and Recapitulation. The objective is to calculate the Annual Energy Production (AEP) and the Capacity Factor (CF) for the IEA 3.4MW Reference wind turbine, specifically evaluating the 240° (SW) wind direction sector.
 
@@ -25,3 +24,9 @@ You should receive a terminal output reading:
 Mean Expected Power: 1,345.21 kW
 Sector AEP:          1,708,411.54 kWh
 Capacity Factor:     0.3992 (39.92%)
+
+
+### Design of Wind Farms: Assignment 2 ###
+
+## Overview
+This assignment implements the estimation of wind farm power production using analytical wake models. The analysis focuses on calculating the velocity deficits and power losses for a row of turbines using **Jensen's wake model** and the **Root-Sum-Square (RSS) superposition model**

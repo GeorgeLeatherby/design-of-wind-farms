@@ -3,7 +3,7 @@ import numpy as np
 
 def weibull_pdf(v: np.ndarray, c: float, k: float) -> np.ndarray:
     """
-    Calculates the Weibull probability density function.
+    Calculates the Weibull probability density function. 
     """
     return (k / c) * ((v / c) ** (k - 1)) * np.exp(- (v / c) ** k)
 
@@ -26,7 +26,7 @@ def main():
     V = df['Wind Speed [m/s]'].values
     P = df['Power [kW]'].values
     
-    # Perform assertion checks based on turbine specs
+    # Perform basic assertion checks based on turbine specs
     assert np.isclose(V[0], 3.0), f"Expected V_in of 3 m/s, but got {V[0]} m/s"
     assert np.isclose(V[-1], 25.0), f"Expected V_out of 25 m/s, but got {V[-1]} m/s"
 
