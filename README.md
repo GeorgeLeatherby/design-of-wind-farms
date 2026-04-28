@@ -20,6 +20,7 @@ The script applies the standard continuous integral formulation to calculate the
 To run the script, ensure you have `pandas` and `numpy` installed in your environment, and that the CSV data file is located in the same directory as the script.
 
 You should receive a terminal output reading:
+
 --- Assignment 1 Results (Direction: 240 deg) ---
 Mean Expected Power: 1,345.21 kW
 Sector AEP:          1,708,411.54 kWh
@@ -30,3 +31,21 @@ Capacity Factor:     0.3992 (39.92%)
 
 ## Overview
 This assignment implements the estimation of wind farm power production using analytical wake models. The analysis focuses on calculating the velocity deficits and power losses for a row of turbines using **Jensen's wake model** and the **Root-Sum-Square (RSS) superposition model**
+
+You should receive a terminal output reading:
+
+--- Assignment 2 Results ---
+Turbine Type: IEA 3.4MW Reference | Hub Height: 120m
+Freestream Wind Speed (V0): 7.5 m/s | k_w: 0.075
+
+--- Wind Direction: 0° ---
+Turbine T1: V_eff = 7.50 m/s | Power = 1515.15 kW | Pn/P1 = 1.0000
+Turbine T2: V_eff = 6.24 m/s | Power =  872.36 kW | Pn/P1 = 0.5758
+Turbine T3: V_eff = 6.09 m/s | Power =  812.42 kW | Pn/P1 = 0.5362
+Farm Summary: Total Power = 3,199.93 kW | Efficiency = 70.40%
+
+--- Wind Direction: 270° ---
+Turbine T1: V_eff = 7.50 m/s | Power = 1515.15 kW | Pn/P1 = 1.0000
+Turbine T2: V_eff = 7.50 m/s | Power = 1515.15 kW | Pn/P1 = 1.0000
+Turbine T3: V_eff = 7.50 m/s | Power = 1515.15 kW | Pn/P1 = 1.0000
+Farm Summary: Total Power = 4,545.45 kW | Efficiency = 100.00%
