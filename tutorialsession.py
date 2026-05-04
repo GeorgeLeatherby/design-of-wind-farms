@@ -14,6 +14,7 @@ ti = [0.06, 0.06]         # Turbulence intensity (-)
 # Create the FlorisModel
 # load basic settings and overwrite
 fmodel = FlorisModel('inputs/gch.yaml')
+
 # Note that in the yaml file  a lot settings are pre-defined!
 fmodel.set(layout_x=x, layout_y=y, wind_directions=wd, wind_speeds=ws, turbulence_intensities=ti)
 
