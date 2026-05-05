@@ -19,11 +19,14 @@ class Assignment3:
 
     def __init__(self):
         self.farm_power_0_degrees_5D = None
+        self.farm_power_0_degrees_10D = None
 
         # Execution
         self.task2()
         self.task3()
         self.task4()
+        self.task5()
+        self.task6()
 
         self.plot()
 
@@ -168,9 +171,10 @@ class Assignment3:
         
         fmodel.run()
 
+        crossstream_dist = 650.0
+        downstream_dist = 500.0
+
         for findex in [0, 1]:
-            crossstream_dist = 650.0
-            downstream_dist = 500.0
             
             # Collect the data for 3 planes using pre-built methods
             horizontal_plane = fmodel.calculate_horizontal_plane(height=120.0, x_resolution=100, y_resolution=100, findex_for_viz=findex)
@@ -178,9 +182,9 @@ class Assignment3:
             cross_plane = fmodel.calculate_cross_plane(y_resolution=100, z_resolution=100, downstream_dist=downstream_dist, findex_for_viz=findex)
 
             # Plot the planes using pre-built methods
-            fig1, ax1 = plt.subplots()
-            fig2, ax2 = plt.subplots()
-            fig3, ax3 = plt.subplots()
+            fig1, ax1 = plt.subplots( figsize=(6, 5) )
+            fig2, ax2 = plt.subplots( figsize=(6, 5) )
+            fig3, ax3 = plt.subplots( figsize=(6, 5) )
 
             ax1 = visualize_cut_plane(horizontal_plane, ax=ax1, title=f"Horizontal Plane at 120 m", color_bar=True)
             ax2 = visualize_cut_plane(y_plane, ax=ax2, title=f"Y Plane at {crossstream_dist} m", color_bar=True)
@@ -253,6 +257,156 @@ class Assignment3:
         print(f"Simulated Farm Power (KW): {self.farm_power_0_degrees_5D/1e3}")
         print(f"Difference in Farm Power (KW): {assignment2_farm_power_0_degrees - self.farm_power_0_degrees_5D/1e3}")
         print(f"Difference farm power in %: {(assignment2_farm_power_0_degrees - self.farm_power_0_degrees_5D/1e3) / assignment2_farm_power_0_degrees * 100}")
+
+    def task5(self):
+        """
+        Repeat question 4 only for a wind direction of 0° and if the separation distance increases 
+        to 10D. Calculate the relative difference (percentage) of the output power of the farm with 
+        respect to the case of 5D.
+        """
+
+        fmodel = FlorisModel("inputs/jensen.yaml")
+
+        # Set the wind speed and direction
+        fmodel.set(
+            wind_speeds=[7.5],
+            wind_directions=[0.0],
+            turbulence_intensities=[0.06],
+            turbine_type=["IEA3_4_MW", "IEA3_4_MW", "IEA3_4_MW"],
+            wind_shear=0.14,
+            layout_x=[0.0, 0.0, 0.0],
+            layout_y=[0.0, 1300.0, 2600.0]
+        )
+
+        fmodel.run()
+        turbine_powers = fmodel.get_turbine_powers()
+        farm_power = fmodel.get_farm_power()
+
+        print(f"\nWind direction: 0° with 10D separation:")
+        print(f"Turbine Powers (KW): {turbine_powers[0]/1e3}")
+        print(f"Farm Power (KW): {farm_power[0]/1e3}")
+
+        self.farm_power_0_degrees_10D = farm_power[0]
+
+        relative_difference_farm_power = (self.farm_power_0_degrees_10D - self.farm_power_0_degrees_5D) / self.farm_power_0_degrees_5D * 100
+
+        print(f"\nRelative difference in farm power between 5D and 10D cases: {relative_difference_farm_power:.2f}%")
+
+    def task6(self):
+        """
+        Use the Gaussian wake model and determine the output power of each wind turbine and 
+        visualize the flow field for night and day conditions when the wind speed is 7.5 m/s, wind 
+        direction is 0° and the separations distance is 5D. Explain your answer and compare the 
+        results and recovery of the turbine wakes for day and night. How do the wind shear and turbulence 
+        intensity paramteres affect power generation? 
+        """
+
+        # Given paramteres for day and night conditions
+        day_ws = 0.06
+        day_ti = 0.12
+
+        night_ws = 0.22
+        night_ti = 0.06
+
+        day_fmodel = FlorisModel("inputs/gch.yaml")
+        night_fmodel = FlorisModel("inputs/gch.yaml")
+
+        # Set the wind speed and direction for day conditions
+        day_fmodel.set(
+            wind_speeds=[7.5],
+            wind_directions=[0.0],
+            turbulence_intensities=[day_ti],
+            turbine_type=["IEA3_4_MW", "IEA3_4_MW", "IEA3_4_MW"],
+            wind_shear=day_ws,
+            layout_x=[0.0, 0.0, 0.0],
+            layout_y=[0.0, 650.0, 1300.0]
+        )
+
+        # Set the wind speed and direction for night conditions
+        night_fmodel.set(
+            wind_speeds=[7.5],
+            wind_directions=[0.0],
+            turbulence_intensities=[night_ti],
+            turbine_type=["IEA3_4_MW", "IEA3_4_MW", "IEA3_4_MW"],
+            wind_shear=night_ws,
+            layout_x=[0.0, 0.0, 0.0],
+            layout_y=[0.0, 650.0, 1300.0]
+        )
+
+        # Run the simulations
+        day_fmodel.run()
+        night_fmodel.run()
+
+        # Get the turbine powers and farm power for day and night conditions
+        day_turbine_powers = day_fmodel.get_turbine_powers()
+        night_turbine_powers = night_fmodel.get_turbine_powers()
+
+        # Get farm power for day and night conditions
+        day_farm_power = day_fmodel.get_farm_power()
+        night_farm_power = night_fmodel.get_farm_power()
+
+        # Define the crossstream and downstream distances
+        crossstream_dist = 650.0
+        downstream_dist = 500.0
+
+        # Visualize the flow fields for day and night conditions
+        day_horizontal_plane = day_fmodel.calculate_horizontal_plane(height=120.0, x_resolution=100, y_resolution=100, findex_for_viz=0)
+        night_horizontal_plane = night_fmodel.calculate_horizontal_plane(height=120.0, x_resolution=100, y_resolution=100, findex_for_viz=0)
+
+        day_y_plane = day_fmodel.calculate_y_plane(x_resolution=100, z_resolution=100, crossstream_dist=crossstream_dist, findex_for_viz=0)
+        night_y_plane = night_fmodel.calculate_y_plane(x_resolution=100, z_resolution=100, crossstream_dist=crossstream_dist, findex_for_viz=0)
+
+        day_cross_plane = day_fmodel.calculate_cross_plane(y_resolution=100, z_resolution=100, downstream_dist=downstream_dist, findex_for_viz=0)
+        night_cross_plane = night_fmodel.calculate_cross_plane(y_resolution=100, z_resolution=100, downstream_dist=downstream_dist, findex_for_viz=0)
+
+        # Plot the planes using pre-built methods. Show day and night conditions side by side for comparison
+        fig1, ax1 = plt.subplots(1, 2, figsize=(8, 5), constrained_layout=True)
+        fig2, ax2 = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
+        fig3, ax3 = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+
+        # force same color scale for day/night on each plane
+        hmin = min(day_horizontal_plane.df["u"].min(), night_horizontal_plane.df["u"].min())
+        hmax = max(day_horizontal_plane.df["u"].max(), night_horizontal_plane.df["u"].max())
+
+        ymin = min(day_y_plane.df["u"].min(), night_y_plane.df["u"].min())
+        ymax = max(day_y_plane.df["u"].max(), night_y_plane.df["u"].max())
+
+        cmin = min(day_cross_plane.df["u"].min(), night_cross_plane.df["u"].min())
+        cmax = max(day_cross_plane.df["u"].max(), night_cross_plane.df["u"].max())
+
+        visualize_cut_plane(day_horizontal_plane, ax=ax1[0], title=f"Day - Horizontal Plane at 120 m", color_bar=False, min_speed=hmin, max_speed=hmax)
+        visualize_cut_plane(night_horizontal_plane, ax=ax1[1], title=f"Night - Horizontal Plane at 120 m", color_bar=False, min_speed=hmin, max_speed=hmax)
+
+        visualize_cut_plane(day_y_plane, ax=ax2[0], title=f"Day - Y Plane at {crossstream_dist} m", color_bar=False, min_speed=ymin, max_speed=ymax)
+        visualize_cut_plane(night_y_plane, ax=ax2[1], title=f"Night - Y Plane at {crossstream_dist} m", color_bar=False, min_speed=ymin, max_speed=ymax)
+
+        visualize_cut_plane(day_cross_plane, ax=ax3[0], title=f"Day - Cross Plane at {downstream_dist} m downstream distance", color_bar=False, min_speed=cmin, max_speed=cmax)
+        visualize_cut_plane(night_cross_plane, ax=ax3[1], title=f"Night - Cross Plane at {downstream_dist} m downstream distance", color_bar=False, min_speed=cmin, max_speed=cmax)
+
+        mappable1 = ax1[0].collections[0]
+        fig1.colorbar(mappable1, ax=ax1, orientation="vertical", label="Wind speed (m/s)")
+        mappable2 = ax2[0].collections[0]
+        fig2.colorbar(mappable2, ax=ax2, orientation="vertical", label="Wind speed (m/s)")
+        mappable3 = ax3[0].collections[0]
+        fig3.colorbar(mappable3, ax=ax3, orientation="vertical", label="Wind speed (m/s)")  
+
+        # Plot the turbine rotors for horizontal plane for day and night conditions
+        layoutviz.plot_turbine_rotors(day_fmodel, ax=ax1[0])
+        layoutviz.plot_turbine_rotors(night_fmodel, ax=ax1[1])
+
+        # Save all generated graphs for day and night conditions in images folder
+        fig1.savefig(f"images/assignment3_day_night_horizontal_plane.png", dpi=600)
+        fig2.savefig(f"images/assignment3_day_night_y_plane.png", dpi=600)
+        fig3.savefig(f"images/assignment3_day_night_cross_plane.png", dpi=600)
+
+        # print the turbine powers and farm power for day and night conditions
+        print(f"\nDay conditions:")
+        print(f"Turbine powers (KW): {day_turbine_powers/1e3}")
+        print(f"Farm power (KW): {day_farm_power/1e3}")
+
+        print(f"\nNight conditions:")
+        print(f"Turbine powers (KW): {night_turbine_powers/1e3}")
+        print(f"Farm power (KW): {night_farm_power/1e3}")
 
     def plot(self):
         plt.show()
