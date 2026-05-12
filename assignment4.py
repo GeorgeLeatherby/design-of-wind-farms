@@ -157,8 +157,8 @@ class assignment4:
         total_capacity_mw = n_turbines * (self.rated_power_single_turbine / 1000.0)
 
         # Initial investment = Turbine Capex + BOP Costs
-        self.turbine_capex = total_capacity_mw * self.turbine_cost * 1e6
-        self.total_investment = self.turbine_capex + self.bop_cost
+        self.turbine_capex_3_turbines = total_capacity_mw * self.turbine_cost * 1e6
+        self.total_investment = self.turbine_capex_3_turbines + self.bop_cost
 
         # Annual O&M = Fixed (Rental Payments) + Variable (Maintenance Rate * AEP)
         annual_fixed_om = total_capacity_mw * self.rental_payment
@@ -211,7 +211,7 @@ class assignment4:
         
         # Totals for the Full Wind Park
         full_park_costs = [
-            self.turbine_capex,     # Initial Turbine Cost
+            self.turbine_capex_3_turbines,     # Initial Turbine Cost
             self.bop_cost,          # Initial Construction/BOP
             lifetime_maintenance,    # 20-year Maintenance
             lifetime_rental         # 20-year Land Lease
@@ -244,7 +244,7 @@ class assignment4:
         # 1. Store 5D Baseline values (from previous tasks)
         self.aep_5d = copy.deepcopy(self.aep) # Use deepcopy, to create real copy with own memory instead of pointer!
         self.lcoe_5d = copy.deepcopy(self.lcoe)
-        self.capex_5d = copy.deepcopy(self.turbine_capex)
+        self.capex_5d = copy.deepcopy(self.turbine_capex_3_turbines)
         self.total_annual_om_5d = copy.deepcopy(self.total_annual_om)
         self.bop_cost_5d = copy.deepcopy(self.bop_cost)
 
@@ -339,7 +339,10 @@ class assignment4:
         # Case of task 3 / baseline 5D
         electricity_price = 41.8 / 1000.0  # $/kWh
         aep_kwh = self.aep_5d / 1000.0
-        initial_investment = self.capex_5d + self.bop_cost_5d
+        baseline_n_turbines = 3
+        baseline_capacity_mw = baseline_n_turbines * (self.rated_power_single_turbine / 1000.0)
+        turbine_capex_baseline = baseline_capacity_mw * self.turbine_cost * 1e6
+        initial_investment = turbine_capex_baseline + self.bop_cost_5d
         annual_revenue = aep_kwh * electricity_price
         annual_net_cf = annual_revenue - self.total_annual_om_5d
 
@@ -408,7 +411,9 @@ class assignment4:
             self.task3(verbose=0)
 
             aep_kwh = self.aep / 1000.0
-            initial_investment = self.turbine_capex + self.bop_cost
+            total_capacity_mw = n_turbines * (self.rated_power_single_turbine / 1000.0)
+            turbine_capex_n = total_capacity_mw * self.turbine_cost * 1e6
+            initial_investment = turbine_capex_n + self.bop_cost
             annual_revenue = aep_kwh * electricity_price
             annual_net_cf = annual_revenue - self.total_annual_om
             pi_value = (annual_net_cf * annuity_factor) / initial_investment
@@ -417,7 +422,7 @@ class assignment4:
             self.lcoe_vs_n.append(self.lcoe)
             self.pi_vs_n.append(pi_value)
 
-            print(f"N={n_turbines:2d} | LCOE=${self.lcoe:.4f}/kWh | PI={pi_value:.4f}")
+            print(f"N={n_turbines:2d} | LCOE=${self.lcoe:.4f}/kWh | PI={pi_value:.4f} | Annual Net CF=${annual_net_cf:,.2f} | AEP={aep_kwh/1e6:.2f} GWh | Investment=${initial_investment:,.2f} | Revenue=${annual_revenue:,.2f}")
 
             if pi_value > 1.0 and min_n_for_pi_gt_1 is None:
                 min_n_for_pi_gt_1 = n_turbines
