@@ -1,0 +1,3 @@
+[submodule "external/landbosse"]
+	path = external/landbosse
+	url = https://github.com/WindfarmDesigner/LandBOSSE.git
