@@ -63,7 +63,7 @@ wake:
     jimenez:
       ad: 0.0
       bd: 0.0
-      kd: 0.075
+      kd: 0.05
 
   wake_velocity_parameters:
     cc:
