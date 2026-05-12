@@ -330,93 +330,102 @@ class assignment4:
 
     def task8(self):
         """
-        Calculate the Net Present Value (NPV) of the wind farm project.
-        Assumes an initial investment in Year 0, and inflating revenues 
-        and O&M costs in Years 1-20.
+        For the case of question 3 (5D baseline), determine the internal rate of return
+        (IRR) numerically and calculate the profitability index (PI) for an average
+        electricity spot price of 41.8 $/MWh.
         """
-        print(f"\nTask 8: Net Present Value (NPV) Calculation")
-        
-        # Financial parameters (Adjust energy_price_y0 if specified in your assignment)
-        self.energy_price_y0 = 0.04 # Assume $0.04 / kWh --> taken from slide 25 of lecture 5
-        self.inflation_rate = 0.03  # 3% annual inflation from lecture slides
-        
-        # Using 5D baseline values
-        self.aep_kwh = self.aep_5d / 1000.0
-        self.investment = self.capex_5d + self.bop_cost_5d
-        
-        # Initialize cash flows list with Year 0 (Negative Initial Investment)
-        self.cash_flows = [-self.investment] 
-        self.npv = -self.investment
-        
-        print(f"{'Year':<5} | {'Net Cash Flow ($)':<20} | {'Discounted CF ($)':<20}")
-        
-        for year in range(1, self.design_lifetime + 1):
-            # Calculate inflated revenues and O&M costs for the current year
-            revenue = self.aep_kwh * self.energy_price_y0 * ((1 + self.inflation_rate) ** year)
-            om_cost = self.total_annual_om_5d * ((1 + self.inflation_rate) ** year)
-            
-            # Net cash flow
-            net_cf = revenue - om_cost
-            self.cash_flows.append(net_cf)
-            
-            # Discount the cash flow back to present value
-            discounted_cf = net_cf / ((1 + self.discount_rate) ** year)
-            self.npv += discounted_cf
-            
-            # Print output for the first 5 years and the last year to keep terminal clean
-            if year <= self.design_lifetime: 
-                print(f"{year:<5} | {net_cf:<20,.2f} | {discounted_cf:<20,.2f}")
+        print(f"\nTask 8: IRR and Profitability Index (PI)")
 
-                
-        print(f"Total Project NPV: ${self.npv:,.2f}")
+        # Case of task 3 / baseline 5D
+        electricity_price = 41.8 / 1000.0  # $/kWh
+        aep_kwh = self.aep_5d / 1000.0
+        initial_investment = self.capex_5d + self.bop_cost_5d
+        annual_revenue = aep_kwh * electricity_price
+        annual_net_cf = annual_revenue - self.total_annual_om_5d
+
+        # Cash flow series: year 0 investment, years 1..N net inflows
+        self.cash_flows = [-initial_investment] + [annual_net_cf] * self.design_lifetime
+
+        # NPV function used for numerical IRR search
+        def npv(rate):
+            total = 0.0
+            for year, cf in enumerate(self.cash_flows):
+                total += cf / ((1 + rate) ** year)
+            return total
+
+        # Numerical IRR (bisection)
+        lower = 0.0
+        upper = 1.0
+        for _ in range(120):
+            mid = 0.5 * (lower + upper)
+            if npv(mid) > 0.0:
+                lower = mid
+            else:
+                upper = mid
+        self.irr = 0.5 * (lower + upper)
+
+        # PI = PV(future net cash inflows) / initial investment
+        annuity_factor = (1 - (1 + self.discount_rate) ** (-self.design_lifetime)) / self.discount_rate
+        pv_future_inflows = annual_net_cf * annuity_factor
+        self.pi = pv_future_inflows / initial_investment
+
+        print(f"Electricity price: ${electricity_price:.4f}/kWh (41.8 $/MWh)")
+        print(f"Initial investment: ${initial_investment:,.2f}")
+        print(f"Annual revenue: ${annual_revenue:,.2f}")
+        print(f"Annual O&M: ${self.total_annual_om_5d:,.2f}")
+        print(f"Annual net cash flow: ${annual_net_cf:,.2f}")
+        print(f"IRR (numerical): {self.irr*100:.2f}%")
+        print(f"PI (at {self.discount_rate*100:.1f}% discount rate): {self.pi:.4f}")
+
+        if self.pi > 1.0:
+            print("Economic assessment: Project is attractive (PI > 1).")
+        else:
+            print("Economic assessment: Project is not attractive (PI < 1).")
 
     def task9(self):
         """
-        Calculate the Internal Rate of Return (IRR) numerically.
-        IRR is the discount rate that makes the NPV exactly equal to zero.
+        Estimate the minimum number of turbines in a straight North-South line with
+        5D spacing to achieve PI > 1. Compare LCOE and PI as turbine number grows.
         """
-        print(f"\nTask 9: Internal Rate of Return (IRR) Calculation")
-        
-        # Helper function to calculate NPV for a given test rate
-        def calculate_test_npv(rate):
-            test_npv = 0
-            for year, cf in enumerate(self.cash_flows):
-                test_npv += cf / ((1 + rate) ** year)
-            return test_npv
-            
-        # Check if project even breaks even at a 0% discount rate
-        if calculate_test_npv(0.0) < 0:
-            print("Project cash flows are entirely negative. IRR cannot be calculated.")
-            return
+        print(f"\nTask 9: Minimum Turbine Number for PI > 1")
 
-        # Simple Bisection Method to find the root (NPV = 0)
-        lower_bound = 0.00
-        upper_bound = 1.00 # Assume IRR is below 100%
-        tolerance = 1e-5
-        
-        for _ in range(100): # Limit iterations to prevent infinite loops
-            guess_rate = (lower_bound + upper_bound) / 2.0
-            current_npv = calculate_test_npv(guess_rate)
-            
-            if abs(current_npv) < tolerance:
-                break # We found the IRR
-            
-            if current_npv > 0:
-                # NPV is positive, meaning the test rate is too low
-                lower_bound = guess_rate
-            else:
-                # NPV is negative, meaning the test rate is too high
-                upper_bound = guess_rate
-                
-        self.irr = guess_rate
-        
-        print(f"Calculated IRR: {self.irr * 100:.2f}%")
-        
-        # Compare to baseline discount rate
-        if self.irr > self.discount_rate:
-            print(f"Conclusion: Project is PROFITABLE. (IRR > {self.discount_rate*100:.1f}%)")
+        electricity_price = 41.8 / 1000.0  # $/kWh
+        annuity_factor = (1 - (1 + self.discount_rate) ** (-self.design_lifetime)) / self.discount_rate
+
+        self.pi_vs_n = []
+        self.lcoe_vs_n = []
+        self.n_values = []
+
+        min_n_for_pi_gt_1 = None
+
+        for n_turbines in range(1, 21):
+            self.x = [0.0] * n_turbines
+            self.y = [i * 5 * self.D for i in range(n_turbines)]
+            self.turbine_coordinates = np.array([[0.0, yi] for yi in self.y])
+            self.pos_substation = np.array([[500.0, 0.5 * (self.y[0] + self.y[-1])]])
+
+            self.task2(verbose=0)
+            self.task3(verbose=0)
+
+            aep_kwh = self.aep / 1000.0
+            initial_investment = self.turbine_capex + self.bop_cost
+            annual_revenue = aep_kwh * electricity_price
+            annual_net_cf = annual_revenue - self.total_annual_om
+            pi_value = (annual_net_cf * annuity_factor) / initial_investment
+
+            self.n_values.append(n_turbines)
+            self.lcoe_vs_n.append(self.lcoe)
+            self.pi_vs_n.append(pi_value)
+
+            print(f"N={n_turbines:2d} | LCOE=${self.lcoe:.4f}/kWh | PI={pi_value:.4f}")
+
+            if pi_value > 1.0 and min_n_for_pi_gt_1 is None:
+                min_n_for_pi_gt_1 = n_turbines
+
+        if min_n_for_pi_gt_1 is not None:
+            print(f"Minimum number of turbines for PI > 1: {min_n_for_pi_gt_1}")
         else:
-            print(f"Conclusion: Project is NOT PROFITABLE. (IRR < {self.discount_rate*100:.1f}%)")
+            print("PI > 1 was not reached in the tested range (1 to 20 turbines).")
 
     def show_plots(self):
         """Show the plots"""
