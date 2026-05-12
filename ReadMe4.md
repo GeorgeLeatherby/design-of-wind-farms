@@ -74,3 +74,17 @@ A dropping discount rate means  future revenues are discounted less heavily, whi
 This simulation is built around a small farm of only 3 turbines. In reality wind farms are often much larger (often 10+ turbines) and distribute the upfront Balance of Plant (BoP) costs—such as the substation, primary grid connection, and access roads—across a much larger energy output, significantly driving down the LCOE. Other reasons not accounted for are fluctuating energy prices and government subsidies.
 
 ### Task 8
+For task 8 it is necessary to calculate the cash flows for each year. 
+- Electricity price (averaged): $0.0418/kWh (41.8 $/MWh)
+- Initial investment: $21,683,274.29
+- Annual revenue: $2,383,135.72
+- Annual O&M: $1,114,405.06
+- Annual net cash flow: $1,268,730.66
+- IRR (numerical): 1.55%
+- PI (at 4.0% discount rate): 0.7952
+
+Economic assessment: Project is not attractive (PI < 1).
+
+
+### Task 9
+N= 3 | LCOE=$0.0475/kWh | PI=0.7952

@@ -43,7 +43,7 @@ class assignment4:
         self.project_construction_time = 12 # months
 
         self.WriteExcel = False # Write excel file with results
-        self.Display = True # Display the results
+        self.Display = False # Display the results
 
 
         # Execution
@@ -398,7 +398,7 @@ class assignment4:
 
         min_n_for_pi_gt_1 = None
 
-        for n_turbines in range(1, 21):
+        for n_turbines in range(1, 101):
             self.x = [0.0] * n_turbines
             self.y = [i * 5 * self.D for i in range(n_turbines)]
             self.turbine_coordinates = np.array([[0.0, yi] for yi in self.y])
