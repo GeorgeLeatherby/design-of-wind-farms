@@ -91,12 +91,12 @@ class assignment4:
             ws_edges = np.arange(0, 50, self.d2_ws)
         )
 
-        fmodel.assign_hub_height_to_ref_height()
         fmodel.set(
             layout_x=self.x, 
             layout_y=self.y, 
             wind_data=wind_rose2,
-            turbine_type=["IEA3_4_MW"]
+            turbine_type=["IEA3_4_MW"],
+            reference_wind_height=120.0
             )
         
         # Run the model
@@ -422,7 +422,7 @@ class assignment4:
             self.lcoe_vs_n.append(self.lcoe)
             self.pi_vs_n.append(pi_value)
 
-            print(f"N={n_turbines:2d} | LCOE=${self.lcoe:.4f}/kWh | PI={pi_value:.4f} | Annual Net CF=${annual_net_cf:,.2f} | AEP={aep_kwh/1e6:.2f} GWh | Investment=${initial_investment:,.2f} | Revenue=${annual_revenue:,.2f}")
+            print(f"N={n_turbines:2d} | LCOE=${self.lcoe:.4f}/kWh | PI={pi_value:.4f} | Annual Net CF=${annual_net_cf:,.2f} | AEP={aep_kwh/1e6:.2f} GWh | Investment={initial_investment:.0f}$ | Revenue={annual_revenue:.0f}$ | BoP={self.bop_cost:.0f}$ | Turbine Capex={turbine_capex_n:.0f}$")
 
             if pi_value > 1.0 and min_n_for_pi_gt_1 is None:
                 min_n_for_pi_gt_1 = n_turbines
