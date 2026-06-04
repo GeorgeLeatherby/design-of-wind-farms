@@ -7,8 +7,8 @@ Includes NetCDF wind data extraction, multi-start randomization, and strict cons
 """
 
 import time
+import secrets
 import numpy as np
-import pandas as pd
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import Point
@@ -16,6 +16,7 @@ from netCDF4 import Dataset, num2date
 from scipy.optimize import minimize
 
 from floris import FlorisModel, TimeSeries
+from floris.flow_visualization import visualize_cut_plane
 from external.landbosse.landbosse.main_function import run_landbosse
 
 # ==========================================
@@ -101,8 +102,34 @@ class WindManager:
         self.ti = ti
         self.d_ws = d_ws
         self.d_wd = d_wd
+        self.dominant_wind_speed = None
+        self.dominant_wind_direction = None
         
         self.wind_rose = self._generate_windrose()
+
+    def _set_dominant_wind_bin(self, ws_hub, wd_in):
+        """
+        Finds the most frequent (ws, wd) bin using the same discretization
+        used for the wind rose.
+        """
+        wd_wrapped = np.mod(wd_in, 360.0)
+        ws_edges = np.arange(0, 50 + self.d_ws, self.d_ws)
+        wd_edges = np.arange(0, 360 + self.d_wd, self.d_wd)
+
+        hist, ws_bin_edges, wd_bin_edges = np.histogram2d(
+            ws_hub,
+            wd_wrapped,
+            bins=[ws_edges, wd_edges]
+        )
+
+        if np.sum(hist) <= 0:
+            self.dominant_wind_speed = float(np.mean(ws_hub))
+            self.dominant_wind_direction = float(np.mean(wd_wrapped))
+            return
+
+        i_ws, i_wd = np.unravel_index(np.argmax(hist), hist.shape)
+        self.dominant_wind_speed = 0.5 * (ws_bin_edges[i_ws] + ws_bin_edges[i_ws + 1])
+        self.dominant_wind_direction = 0.5 * (wd_bin_edges[i_wd] + wd_bin_edges[i_wd + 1])
 
     def _generate_windrose(self):
         """
@@ -121,6 +148,7 @@ class WindManager:
         
         # Power Law Transformation to Hub Height
         ws_hub = ws_in * (self.hub_height_out / self.ref_height_in) ** self.wind_shear
+        self._set_dominant_wind_bin(ws_hub, wd_in)
         
         # Build Floris TimeSeries
         timeseries = TimeSeries(wind_speeds=ws_hub, wind_directions=wd_in, turbulence_intensities=self.ti)
@@ -141,21 +169,31 @@ class FlorisManager:
     """
     Manages the wake modeling and Annual Energy Production (AEP) calculations.
     """
-    def __init__(self, wake_model_path, turbine_type, reference_wind_height, wind_shear, wind_rose):
+    def __init__(
+        self,
+        wake_model_path,
+        turbine_type,
+        reference_wind_height,
+        wind_shear,
+        wind_rose,
+        dominant_wind_speed=None,
+        dominant_wind_direction=None
+    ):
         self.wake_model_path = wake_model_path
         self.turbine_type = turbine_type
         self.reference_wind_height = reference_wind_height
         self.wind_shear = wind_shear
         self.wind_rose = wind_rose
+        self.dominant_wind_speed = dominant_wind_speed
+        self.dominant_wind_direction = dominant_wind_direction
+        self.fmodel = FlorisModel(self.wake_model_path)
 
     def evaluate_layout(self, layout_real):
         """
         Runs the FLORIS model for a given layout (in meters) and returns AEP.
         Expected shape: layout_real (N, 2)
         """
-        fmodel = FlorisModel(self.wake_model_path)
-        
-        fmodel.set(
+        self.fmodel.set(
             layout_x=layout_real[:, 0],
             layout_y=layout_real[:, 1],
             wind_data=self.wind_rose,
@@ -163,14 +201,93 @@ class FlorisManager:
             reference_wind_height=self.reference_wind_height,
             wind_shear=self.wind_shear
         )
-        
-        fmodel.run()
-        aep_wake = fmodel.get_farm_AEP()
-        
-        fmodel.run_no_wake()
-        aep_no_wake = fmodel.get_farm_AEP()
+
+        self.fmodel.run()
+        aep_wake = self.fmodel.get_farm_AEP()
+
+        self.fmodel.run_no_wake()
+        aep_no_wake = self.fmodel.get_farm_AEP()
         
         return aep_wake, aep_no_wake
+
+    def plot_final_wake_top_view(
+        self,
+        layout_real,
+        site_polygon=None,
+        wind_speed=None,
+        wind_direction=None,
+        turbulence_intensity=0.06,
+        x_resolution=250,
+        y_resolution=250
+    ):
+        """
+        Plots a top-view wake field for the final layout at one representative
+        operating point using FLORIS cut-plane visualization.
+        """
+        if wind_speed is None:
+            wind_speed = self.dominant_wind_speed if self.dominant_wind_speed is not None else 8.0
+        if wind_direction is None:
+            wind_direction = self.dominant_wind_direction if self.dominant_wind_direction is not None else 270.0
+
+        num_turbines = layout_real.shape[0]
+
+        # Use a dedicated model for visualization so we do not overwrite
+        # the optimization model state (and avoid wind_data reset warnings).
+        viz_fmodel = FlorisModel(self.wake_model_path)
+        viz_fmodel.set(
+            layout_x=layout_real[:, 0],
+            layout_y=layout_real[:, 1],
+            wind_speeds=[wind_speed],
+            wind_directions=[wind_direction],
+            turbulence_intensities=[turbulence_intensity],
+            turbine_type=[self.turbine_type] * num_turbines,
+            reference_wind_height=self.reference_wind_height,
+            wind_shear=self.wind_shear
+        )
+        viz_fmodel.run()
+
+        horizontal_plane = viz_fmodel.calculate_horizontal_plane(
+            height=self.reference_wind_height,
+            x_resolution=x_resolution,
+            y_resolution=y_resolution,
+            findex_for_viz=0
+        )
+
+        fig, ax = plt.subplots(1, 1, figsize=(9, 7))
+        visualize_cut_plane(
+            horizontal_plane,
+            ax=ax,
+            title=(
+                f"Wake Top View at Hub Height ({self.reference_wind_height:.0f} m), "
+                f"WD={wind_direction:.1f} deg, WS={wind_speed:.1f} m/s"
+            ),
+            color_bar=True
+        )
+        ax.scatter(
+            layout_real[:, 0],
+            layout_real[:, 1],
+            marker='o',
+            s=40,
+            facecolors='none',
+            edgecolors='black',
+            linewidths=1.0,
+            label='Turbine Locations'
+        )
+
+        if site_polygon is not None:
+            if site_polygon.geom_type == 'MultiPolygon':
+                for geom in site_polygon.geoms:
+                    site_x, site_y = geom.exterior.xy
+                    ax.plot(site_x, site_y, color='white', linewidth=1.6, alpha=0.95)
+                ax.plot([], [], color='white', linewidth=1.6, label='Site Boundary')
+            elif site_polygon.geom_type == 'Polygon':
+                site_x, site_y = site_polygon.exterior.xy
+                ax.plot(site_x, site_y, color='white', linewidth=1.6, alpha=0.95, label='Site Boundary')
+
+        ax.set_aspect('equal')
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.25)
+        fig.tight_layout()
 
 
 # ==========================================
@@ -239,75 +356,207 @@ class LayoutOptimizer:
     Runs multi-start layout optimization to maximize PI. Supports dynamic
     turbine counts and boundary-biased random initializations.
     """
-    def __init__(self, site_manager, floris_manager, econ_manager, 
-                 min_separation_m, opt_method):
+    def __init__(self, site_manager, floris_manager, econ_manager,
+                 min_separation_m, opt_method, verbose=True, objective_log_every=1):
         self.site = site_manager
         self.floris = floris_manager
         self.econ = econ_manager
-        self.min_dist_norm = min_separation_m / self.site.scale 
+        self.min_dist_norm = min_separation_m / self.site.scale
         self.opt_method = opt_method
         self.current_num_turbines = None # Set dynamically during loops
+        self.verbose = verbose
+        self.objective_log_every = objective_log_every
+        self.obj_eval_count = 0
+        self.best_eval_pi = -np.inf
+        self.current_run_history_norm = []
+        self.last_run_history_norm = []
 
-    def generate_biased_layout(self, num_turbines, random_seed):
+    @staticmethod
+    def _unique_rows(arr, decimals=8):
         """
-        Generates random layout preferring West/South edges (250° prevailing wind).
+        Removes duplicate 2D points with rounding tolerance.
         """
-        np.random.seed(random_seed)
+        if arr.size == 0:
+            return arr
+        rounded = np.round(arr, decimals=decimals)
+        _, idx = np.unique(rounded, axis=0, return_index=True)
+        return arr[np.sort(idx)]
+
+    def _log(self, msg):
+        if self.verbose:
+            print(msg)
+
+    def _is_valid_point(self, cand_norm, placed_norm):
+        """
+        Checks polygon and minimum-distance feasibility of a candidate point.
+        """
+        if self.site.get_distance_to_boundary(cand_norm[0], cand_norm[1]) <= 0.0:
+            return False
+
+        for placed_pt in placed_norm:
+            if np.linalg.norm(cand_norm - placed_pt) < self.min_dist_norm:
+                return False
+
+        return True
+
+    def _iter_polygon_parts(self, geom):
+        """
+        Returns a list of polygons from Polygon/MultiPolygon geometries.
+        """
+        if geom.geom_type == 'Polygon':
+            return [geom]
+        if geom.geom_type == 'MultiPolygon':
+            return list(geom.geoms)
+        return []
+
+    def _generate_edge_candidates(self, rng, edge_offset_norm):
+        """
+        Generates near-edge candidate points from an inward polygon buffer.
+        """
+        edge_offset_real = edge_offset_norm * self.site.scale
+        inner_geom = self.site.site_polygon.buffer(-edge_offset_real)
+        if inner_geom.is_empty:
+            inner_geom = self.site.site_polygon
+
+        candidates = []
+        target_spacing_norm = max(self.min_dist_norm * 1.05, edge_offset_norm * 2.0)
+
+        for poly in self._iter_polygon_parts(inner_geom):
+            boundary = poly.exterior
+            perimeter_real = boundary.length
+            perimeter_norm = perimeter_real / self.site.scale
+            n_candidates = max(1, int(np.floor(perimeter_norm / target_spacing_norm)))
+            phase = rng.uniform(0.0, 1.0)
+
+            for idx in range(n_candidates):
+                s = ((idx + phase) / n_candidates) * perimeter_real
+                point_real = boundary.interpolate(s % perimeter_real)
+                cand_norm = np.array([
+                    (point_real.x - self.site.min_x) / self.site.scale,
+                    (point_real.y - self.site.min_y) / self.site.scale
+                ])
+                candidates.append(cand_norm)
+
+        if len(candidates) == 0:
+            return np.empty((0, 2), dtype=float)
+
+        return np.array(candidates)
+
+    def _sample_random_inside(self, rng):
+        """
+        Samples one random normalized point from the site bounding box.
+        """
+        x_cand = rng.uniform(0.0, 1.0)
+        y_cand = rng.uniform(0.0, 1.0)
+        return np.array([x_cand, y_cand], dtype=float)
+
+    def generate_initial_layout(self, num_turbines, rng, edge_offset_norm=0.01, max_random_attempts=100):
+        """
+        Two-tier initial solution generator:
+        1) Place turbines quasi-uniformly along interior edges.
+        2) Fill remaining turbines with random interior placement.
+        """
+        self._log(
+            f"      [Init] Searching feasible initial layout for N={num_turbines} "
+            f"(edge_offset_norm={edge_offset_norm:.3f}, random_try_limit={max_random_attempts})"
+        )
         layout_norm = []
-        max_attempts = 15000
-        attempts = 0
-        
-        while len(layout_norm) < num_turbines and attempts < max_attempts:
-            x_cand = np.random.uniform(0, 1)
-            y_cand = np.random.uniform(0, 1)
-            
-            # Must not be directly on the boundary
-            dist_to_edge = self.site.get_distance_to_boundary(x_cand, y_cand)
-            if dist_to_edge > 0.02: 
-                
-                # Determine nearest boundary normal vector
-                pt_real = self.site.denormalize_coords(np.array([[x_cand, y_cand]]))[0]
-                point = Point(pt_real[0], pt_real[1])
-                
-                # FIX: Use .boundary to project and interpolate safely on MultiPolygons
-                boundary_geom = self.site.site_polygon.boundary
-                nearest_bound_pt = boundary_geom.interpolate(
-                    boundary_geom.project(point)
-                )
-                
-                # If nearest boundary is to the West (dx<0) or South (dy<0), increase acceptance probability
-                dx = nearest_bound_pt.x - point.x
-                dy = nearest_bound_pt.y - point.y
-                is_preferred_edge = (dx < 0) or (dy < 0)
-                is_close = dist_to_edge < 0.15 
-                
-                accept_prob = 1.0 if (is_preferred_edge and is_close) else 0.15
-                
-                if np.random.rand() < accept_prob:
-                    # Enforce 2D separation distance
-                    conflict = False
-                    for placed_pt in layout_norm:
-                        dist = np.sqrt((x_cand - placed_pt[0])**2 + (y_cand - placed_pt[1])**2)
-                        if dist < self.min_dist_norm:
-                            conflict = True
-                            break
-                    if not conflict:
-                        layout_norm.append([x_cand, y_cand])
-            attempts += 1
-            
+        viable_edge_candidates = []
+        selected_edge_positions = []
+
+        edge_candidates = self._generate_edge_candidates(rng, edge_offset_norm=edge_offset_norm)
+        self._log(f"      [Init] Edge tier generated {edge_candidates.shape[0]} candidates.")
+        if edge_candidates.shape[0] > 0:
+            remaining_candidates = [edge_candidates[i] for i in rng.permutation(edge_candidates.shape[0])]
+            while len(layout_norm) < num_turbines and len(remaining_candidates) > 0:
+                viable_indices = [
+                    idx for idx, cand_norm in enumerate(remaining_candidates)
+                    if self._is_valid_point(cand_norm, layout_norm)
+                ]
+                if len(viable_indices) > 0:
+                    viable_edge_candidates.extend([remaining_candidates[idx].copy() for idx in viable_indices])
+                if len(viable_indices) == 0:
+                    break
+
+                pick_pos = int(rng.integers(0, len(viable_indices)))
+                selected_idx = viable_indices[pick_pos]
+                chosen = remaining_candidates.pop(selected_idx)
+                selected_edge_positions.append(chosen.copy())
+                layout_norm.append(chosen)
+
+        self._log(
+            f"      [Init] Edge tier placed {len(layout_norm)}/{num_turbines} turbines."
+        )
+
+        random_attempts = 0
+        while len(layout_norm) < num_turbines and random_attempts < max_random_attempts:
+            cand_norm = self._sample_random_inside(rng)
+            random_attempts += 1
+            if self._is_valid_point(cand_norm, layout_norm):
+                layout_norm.append(cand_norm)
+
+        self._log(
+            f"      [Init] Random tier used {random_attempts} tries and reached "
+            f"{len(layout_norm)}/{num_turbines} turbines."
+        )
+
         if len(layout_norm) < num_turbines:
-            raise RuntimeError(f"Constraint Failure: Cannot fit {num_turbines} turbines with 2D spacing in site.")
-        return np.array(layout_norm)
+            raise RuntimeError(
+                f"Initial solution failed: could not place all {num_turbines} turbines "
+                f"inside polygon boundaries with >=2D spacing after {max_random_attempts} random tries."
+            )
+
+        self._log("      [Init] Feasible initial layout found.")
+
+        edge_candidates_arr = np.array(edge_candidates) if edge_candidates.size else np.empty((0, 2), dtype=float)
+        viable_edge_arr = np.array(viable_edge_candidates) if len(viable_edge_candidates) > 0 else np.empty((0, 2), dtype=float)
+        selected_edge_arr = np.array(selected_edge_positions) if len(selected_edge_positions) > 0 else np.empty((0, 2), dtype=float)
+
+        init_debug = {
+            'edge_candidates_norm': edge_candidates_arr,
+            'viable_edge_candidates_norm': self._unique_rows(viable_edge_arr),
+            'selected_edge_positions_norm': self._unique_rows(selected_edge_arr)
+        }
+
+        return np.array(layout_norm), init_debug
+
+    def _layout_is_feasible(self, layout_norm):
+        """
+        Fast feasibility check to avoid evaluating clearly invalid layouts.
+        """
+        for i in range(layout_norm.shape[0]):
+            if self.site.get_distance_to_boundary(layout_norm[i, 0], layout_norm[i, 1]) <= 0.0:
+                return False
+
+        for i in range(layout_norm.shape[0]):
+            for j in range(i + 1, layout_norm.shape[0]):
+                if np.linalg.norm(layout_norm[i] - layout_norm[j]) < self.min_dist_norm:
+                    return False
+
+        return True
 
     def _objective_function(self, layout_flat_norm):
         """
         SciPy objective function (Minimizes -PI).
         """
+        self.obj_eval_count += 1
         layout_norm = layout_flat_norm.reshape(self.current_num_turbines, 2)
+        self.current_run_history_norm.append(layout_norm.copy())
+        if not self._layout_is_feasible(layout_norm):
+            return 1e9
+
         layout_real = self.site.denormalize_coords(layout_norm)
         
         aep_wake, _ = self.floris.evaluate_layout(layout_real)
         pi, _ = self.econ.calculate_metrics(layout_real, aep_wake, self.current_num_turbines)
+
+        if pi > self.best_eval_pi:
+            self.best_eval_pi = pi
+
+        if self.objective_log_every > 0 and (self.obj_eval_count % self.objective_log_every == 0):
+            self._log(
+                f"      [Opt] Eval {self.obj_eval_count}: PI={pi:.4f}, best_eval_PI={self.best_eval_pi:.4f}"
+            )
         
         return -pi
 
@@ -316,15 +565,34 @@ class LayoutOptimizer:
         Executes SciPy optimization for a single layout.
         """
         self.current_num_turbines = num_turbines
+        self.obj_eval_count = 0
+        self.best_eval_pi = -np.inf
+        self.current_run_history_norm = [initial_layout_norm.copy()]
         x0 = initial_layout_norm.flatten()
         constraints = []
         
         def boundary_constraint(var, idx):
             x, y = var[2 * idx], var[2 * idx + 1]
             return self.site.get_distance_to_boundary(x, y)
+
+        def lower_x_constraint(var, idx):
+            return var[2 * idx]
+
+        def upper_x_constraint(var, idx):
+            return 1.0 - var[2 * idx]
+
+        def lower_y_constraint(var, idx):
+            return var[2 * idx + 1]
+
+        def upper_y_constraint(var, idx):
+            return 1.0 - var[2 * idx + 1]
             
         for i in range(num_turbines):
             constraints.append({'type': 'ineq', 'fun': boundary_constraint, 'args': (i,)})
+            constraints.append({'type': 'ineq', 'fun': lower_x_constraint, 'args': (i,)})
+            constraints.append({'type': 'ineq', 'fun': upper_x_constraint, 'args': (i,)})
+            constraints.append({'type': 'ineq', 'fun': lower_y_constraint, 'args': (i,)})
+            constraints.append({'type': 'ineq', 'fun': upper_y_constraint, 'args': (i,)})
             
         def distance_constraint(var, i, j):
             xi, yi = var[2 * i], var[2 * i + 1]
@@ -335,15 +603,31 @@ class LayoutOptimizer:
             for j in range(i + 1, num_turbines):
                 constraints.append({'type': 'ineq', 'fun': distance_constraint, 'args': (i, j)})
 
-        opt_options = {'disp': True, 'maxiter': 50}
+        opt_options = {'disp': True, 'maxiter': 200}
         if self.opt_method == 'COBYLA':
             opt_options['rhobeg'] = 0.05
+            opt_options['catol'] = 1e-4
+            opt_options['tol'] = 5e-4
+
+        self._log(
+            f"      [Opt] Starting {self.opt_method} for N={num_turbines} with "
+            f"{len(constraints)} constraints."
+        )
 
         
         res = minimize(
             fun=self._objective_function, x0=x0, method=self.opt_method,
             constraints=constraints, options=opt_options
         )
+
+        self._log(
+            f"      [Opt] Finished {self.opt_method}: success={res.success}, "
+            f"status={res.status}, nfev={getattr(res, 'nfev', 'n/a')}, "
+            f"best_local_PI={-res.fun:.4f}"
+        )
+
+        # Keep the most recent run trajectory available and overwrite on next run.
+        self.last_run_history_norm = [step.copy() for step in self.current_run_history_norm]
         
         return res.x.reshape(num_turbines, 2), -res.fun # Return layout and positive PI
 
@@ -359,20 +643,31 @@ class LayoutOptimizer:
         
         global_best_pi = -np.inf
         global_best_layout_norm = None
+        global_best_init_layout_norm = None
         global_best_n = 0
+        global_best_init_debug = None
         global_time = 0
         
         for num_turbines in range(min_turbines, max_turbines + 1):
             print(f"\n--- Testing Capacity: {num_turbines} Turbines ({(num_turbines * 3.37):.2f} MW) ---")
+            capacity_best = -np.inf
             
             for start_idx in range(num_random_starts):
-                seed = int(time.time() * 1000) % 100000 + start_idx
+                seed = secrets.randbits(64)
+                rng = np.random.default_rng(seed)
+                print(f"   [Start {start_idx+1}/{num_random_starts}] Seed: {seed}")
+                print(f"   [Start {start_idx+1}/{num_random_starts}] Building initial layout...")
                 
                 try:
-                    init_norm = self.generate_biased_layout(num_turbines, seed)
+                    init_norm, init_debug = self.generate_initial_layout(num_turbines, rng)
                 except RuntimeError as e:
                     print(f"   [Start {start_idx+1}/{num_random_starts}] Skipping: {e}")
                     continue # Skip if geometrically impossible
+
+                print(
+                    f"   [Start {start_idx+1}/{num_random_starts}] Initial layout accepted. "
+                    f"Launching optimization..."
+                )
                 
                 print(f"   [Start {start_idx+1}/{num_random_starts}] Optimizing layout...")
                 
@@ -380,23 +675,41 @@ class LayoutOptimizer:
                 final_norm, best_local_pi = self.run_optimization(init_norm, num_turbines)
                 t_end = time.time()
                 global_time += (t_end - t_start)
+
+                print(
+                    f"   [Start {start_idx+1}/{num_random_starts}] Done in {t_end - t_start:.2f}s, "
+                    f"PI={best_local_pi:.4f}"
+                )
+                capacity_best = max(capacity_best, best_local_pi)
                 
                 if best_local_pi > global_best_pi:
                     global_best_pi = best_local_pi
                     global_best_layout_norm = final_norm
+                    global_best_init_layout_norm = init_norm.copy()
                     global_best_n = num_turbines
+                    global_best_init_debug = init_debug
                     print(f"   --> New Best Layout Found! PI: {best_local_pi:.4f}")
+
+            if capacity_best > -np.inf:
+                print(
+                    f"--- Capacity Summary N={num_turbines}: best PI={capacity_best:.4f}, "
+                    f"global best PI={global_best_pi:.4f} ---"
+                )
+            else:
+                print(f"--- Capacity Summary N={num_turbines}: no feasible initial layout found. ---")
 
         if global_best_layout_norm is None:
             raise RuntimeError("Optimization completely failed. Space may be too restricted.")
             
-        return global_best_layout_norm, global_best_n, global_time
+        return global_best_layout_norm, global_best_init_layout_norm, global_best_init_debug, global_best_n, global_time
 
-    def plot_final_solution(self, final_layout_norm, num_turbines, total_time):
+    def plot_final_solution(self, final_layout_norm, initial_layout_norm, init_debug, num_turbines, total_time):
         """
         Plots the ultimate winning layout and evaluates its metrics.
+        Also adds a wake top-view and a diagnostics figure with coordinate table.
         """
         final_real = self.site.denormalize_coords(final_layout_norm)
+        init_real = self.site.denormalize_coords(initial_layout_norm)
         
         aep_wake, aep_nw = self.floris.evaluate_layout(final_real)
         pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines)
@@ -419,6 +732,17 @@ class LayoutOptimizer:
             
         ax1.scatter(self.econ.substation_coord[0, 0], self.econ.substation_coord[0, 1], marker='s', color='orange', s=100, label='Substation')
         ax1.scatter(final_real[:, 0], final_real[:, 1], color='green', s=80, label='Optimized Turbines')
+        ax1.scatter(
+            init_real[:, 0],
+            init_real[:, 1],
+            marker='x',
+            color='gray',
+            s=65,
+            alpha=0.95,
+            linewidths=1.5,
+            label='Initial Turbines',
+            zorder=5
+        )
         
         ax1.set_aspect('equal')
         ax1.set_xlabel('Easting [m]')
@@ -442,6 +766,71 @@ class LayoutOptimizer:
                     bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='gray', alpha=0.9))
                     
         plt.subplots_adjust(bottom=0.25)
+
+        # Plot 2: FLORIS top-view wake map for the final layout.
+        self.floris.plot_final_wake_top_view(final_real, site_polygon=self.site.site_polygon)
+
+        # Plot 3: Coordinates table + tier-1 viable edge candidates diagnostics.
+        fig3, (ax_tbl, ax_map) = plt.subplots(
+            2,
+            1,
+            figsize=(13, 12),
+            gridspec_kw={'height_ratios': [2, 3]}
+        )
+        ax_tbl.axis('off')
+        table_rows = [
+            [
+                i + 1,
+                f"{init_real[i, 0]:.2f}",
+                f"{init_real[i, 1]:.2f}",
+                f"{final_real[i, 0]:.2f}",
+                f"{final_real[i, 1]:.2f}"
+            ]
+            for i in range(num_turbines)
+        ]
+        table = ax_tbl.table(
+            cellText=table_rows,
+            colLabels=['Turbine', 'Start X [m]', 'Start Y [m]', 'Final X [m]', 'Final Y [m]'],
+            loc='center'
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(8)
+        table.scale(1.0, 1.2)
+        ax_tbl.set_title('Turbine Coordinates: Start vs Final (Best Solution)')
+
+        if self.site.site_polygon.geom_type == 'MultiPolygon':
+            for geom in self.site.site_polygon.geoms:
+                site_x, site_y = geom.exterior.xy
+                ax_map.plot(site_x, site_y, color='blue')
+            ax_map.plot([], [], color='blue', label='Site Boundary')
+        elif self.site.site_polygon.geom_type == 'Polygon':
+            site_x, site_y = self.site.site_polygon.exterior.xy
+            ax_map.plot(site_x, site_y, color='blue', label='Site Boundary')
+
+        viable_edge_norm = init_debug['viable_edge_candidates_norm'] if init_debug is not None else np.empty((0, 2), dtype=float)
+        if viable_edge_norm.size > 0:
+            viable_edge_real = self.site.denormalize_coords(viable_edge_norm)
+            ax_map.scatter(
+                viable_edge_real[:, 0],
+                viable_edge_real[:, 1],
+                marker='.',
+                s=18,
+                alpha=0.45,
+                color='tab:blue',
+                label=f"Tier-1 Viable Candidates (n={viable_edge_real.shape[0]})"
+            )
+
+        ax_map.scatter(init_real[:, 0], init_real[:, 1], marker='x', s=55, color='gray', label='Initial Turbines')
+        ax_map.scatter(final_real[:, 0], final_real[:, 1], marker='o', s=35, color='green', label='Final Turbines')
+        ax_map.scatter(self.econ.substation_coord[0, 0], self.econ.substation_coord[0, 1], marker='s', color='orange', s=80, label='Substation')
+        ax_map.set_aspect('equal')
+        ax_map.set_xlabel('Easting [m]')
+        ax_map.set_ylabel('Northing [m]')
+        ax_map.set_title('Tier-1 Viable Boundary Candidates and Best Layout Coordinates')
+        ax_map.grid(True, alpha=0.35)
+        ax_map.legend(loc='best')
+        fig3.tight_layout()
+
         plt.show()
 
 
@@ -460,8 +849,8 @@ if __name__ == "__main__":
     RATED_POWER_KW = 3370
     
     TARGET_MIN_MW = 45
-    TARGET_MAX_MW = 60
-    NUM_RANDOM_STARTS = 3 # Increase for heavier exploration
+    TARGET_MAX_MW = 50
+    NUM_RANDOM_STARTS = 20 # Increase for heavier exploration
     
     # Substation coordinate must be evaluated/placed prior based on site geometry
     SUBSTATION_COORD = np.array([[694264.9, 5570861.7]]) # EPSG 25832 (UTM Zone 32N)
@@ -485,7 +874,9 @@ if __name__ == "__main__":
             turbine_type="IEA3_4_MW",
             reference_wind_height=120,
             wind_shear=0.2,
-            wind_rose=wind_mgr.wind_rose 
+            wind_rose=wind_mgr.wind_rose,
+            dominant_wind_speed=wind_mgr.dominant_wind_speed,
+            dominant_wind_direction=wind_mgr.dominant_wind_direction
         )
         
         econ_mgr = EconomicsManager(
@@ -509,14 +900,14 @@ if __name__ == "__main__":
         )
         
         # Execute Top-Level Loop
-        best_layout_norm, best_n, comp_time = optimizer.run_capacity_top_loop(
+        best_layout_norm, best_init_layout_norm, best_init_debug, best_n, comp_time = optimizer.run_capacity_top_loop(
             target_mw_min=TARGET_MIN_MW, 
             target_mw_max=TARGET_MAX_MW, 
             num_random_starts=NUM_RANDOM_STARTS
         )
         
         # Output final overall results
-        optimizer.plot_final_solution(best_layout_norm, best_n, comp_time)
+        optimizer.plot_final_solution(best_layout_norm, best_init_layout_norm, best_init_debug, best_n, comp_time)
         
     except Exception as e:
         import traceback
