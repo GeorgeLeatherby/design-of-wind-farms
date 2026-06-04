@@ -138,7 +138,6 @@ class WindManager:
         nc_dataset = Dataset(self.nc_file_path, mode='r')
         
         # Ensure extraction of time and standard 10m wind variables 
-        # (Replace 'WS10'/'WD10' if your dataset uses different internal keys)
         time_var = nc_dataset.variables['time']
         times = num2date(time_var[:], time_var.units, calendar=getattr(time_var, 'calendar', 'standard'))
         
@@ -227,7 +226,7 @@ class FlorisManager:
         if wind_speed is None:
             wind_speed = self.dominant_wind_speed if self.dominant_wind_speed is not None else 8.0
         if wind_direction is None:
-            wind_direction = self.dominant_wind_direction if self.dominant_wind_direction is not None else 270.0
+            wind_direction = self.dominant_wind_direction if self.dominant_wind_direction is not None else 240.0
 
         num_turbines = layout_real.shape[0]
 
@@ -719,7 +718,7 @@ class LayoutOptimizer:
         
         fig, ax1 = plt.subplots(1, 1, figsize=(8, 8))
         
-        # FIX: Handle plotting for both single Polygons and MultiPolygons safely
+        # Handle plotting for both single Polygons and MultiPolygons safely
         if self.site.site_polygon.geom_type == 'MultiPolygon':
             for geom in self.site.site_polygon.geoms:
                 site_x, site_y = geom.exterior.xy
