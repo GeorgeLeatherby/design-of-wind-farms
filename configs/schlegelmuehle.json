@@ -1,0 +1,72 @@
+{
+  "site": {
+    "shapefile_path": "selected_site_schlegelmuehle/ausgewahlflächen_schlegelmuehle.shp"
+  },
+  "wind": {
+    "nc_file_path": "selected_site_schlegelmuehle/essai10_schlegelmuehle.nc",
+    "ref_height_in": 10,
+    "hub_height_out": 120,
+    "wind_shear": 0.2,
+    "ti": 0.18,
+    "d_ws": 0.5,
+    "d_wd": 1
+  },
+  "turbine": {
+    "diameter_m": 130,
+    "rated_power_kw": 3370
+  },
+  "optimization": {
+    "target_min_mw": 45,
+    "target_max_mw": 50,
+    "num_random_starts": 20,
+    "min_distance_multiplier": 2,
+    "opt_method": "COBYLA"
+  },
+  "substation": {
+    "coordinates": [
+      [694264.9, 5570861.7]
+    ]
+  },
+  "floris": {
+    "wake_model_path": "inputs/gch.yaml",
+    "turbine_type": "IEA3_4_MW",
+    "reference_wind_height": 120,
+    "wind_shear": 0.2
+  },
+  "economics": {
+    "array_voltage": 30,
+    "turbine_costs": 1125000.0,
+    "om_costs": 0.012,
+    "rental_costs": 20000,
+    "nominal_discount_rate": 0.025,
+    "project_lifetime": 20,
+    "project_start_year": 2021,
+    "electricity_price_model": {
+      "site_coefficient": 1.145,
+      "site_wind_factor": 0.03755,
+      "reference_hub_height_m": 110,
+      "annual_average_price_by_year_usd_per_mwh": {
+        "2021": 110.4,
+        "2022": 268.5,
+        "2023": 193.7,
+        "2024": 96.9,
+        "2025": 71.6,
+        "2026": 63.1,
+        "2027": 67.4,
+        "2028": 59.1,
+        "2029": 51.7,
+        "2030": 47.0,
+        "2031": 42.0,
+        "2032": 42.0,
+        "2033": 42.0,
+        "2034": 42.0,
+        "2035": 42.0,
+        "2036": 42.0,
+        "2037": 42.0,
+        "2038": 42.0,
+        "2039": 42.0,
+        "2040": 42.0
+      }
+    }
+  }
+}

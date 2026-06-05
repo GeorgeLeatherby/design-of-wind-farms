@@ -1,0 +1,70 @@
+{
+  "site": {
+    "shapefile_path": null
+  },
+  "wind": {
+    "nc_file_path": null,
+    "ref_height_in": 10,
+    "hub_height_out": null,
+    "wind_shear": null,
+    "ti": 0.06,
+    "d_ws": 0.5,
+    "d_wd": 1
+  },
+  "turbine": {
+    "diameter_m": null,
+    "rated_power_kw": null
+  },
+  "optimization": {
+    "target_min_mw": null,
+    "target_max_mw": null,
+    "num_random_starts": null,
+    "min_distance_multiplier": 2,
+    "opt_method": "COBYLA"
+  },
+  "substation": {
+    "coordinates": null
+  },
+  "floris": {
+    "wake_model_path": "inputs/gch.yaml",
+    "turbine_type": null,
+    "reference_wind_height": null,
+    "wind_shear": null
+  },
+  "economics": {
+    "array_voltage": null,
+    "turbine_costs": null,
+    "om_costs": null,
+    "rental_costs": null,
+    "nominal_discount_rate": null,
+    "project_lifetime": null,
+    "project_start_year": 2021,
+    "electricity_price_model": {
+      "site_coefficient": 1.235,
+      "site_wind_factor": 0.04295,
+      "reference_hub_height_m": 110,
+      "annual_average_price_by_year_usd_per_mwh": {
+        "2021": 100.5,
+        "2022": 249.8,
+        "2023": 154.3,
+        "2024": 74.3,
+        "2025": 57.7,
+        "2026": 53.6,
+        "2027": 63.1,
+        "2028": 51.2,
+        "2029": 38.9,
+        "2030": 35.9,
+        "2031": 32.6,
+        "2032": 32.6,
+        "2033": 32.6,
+        "2034": 32.6,
+        "2035": 32.6,
+        "2036": 32.6,
+        "2037": 32.6,
+        "2038": 32.6,
+        "2039": 32.6,
+        "2040": 32.6
+      }
+    }
+  }
+}
