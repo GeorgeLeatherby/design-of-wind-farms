@@ -8,6 +8,7 @@ Includes NetCDF wind data extraction, multi-start randomization, and strict cons
 
 import time
 import secrets
+import json
 import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -104,6 +105,7 @@ class WindManager:
         self.d_wd = d_wd
         self.dominant_wind_speed = None
         self.dominant_wind_direction = None
+        self.mean_hub_wind_speed = None
         
         self.wind_rose = self._generate_windrose()
 
@@ -147,6 +149,7 @@ class WindManager:
         
         # Power Law Transformation to Hub Height
         ws_hub = ws_in * (self.hub_height_out / self.ref_height_in) ** self.wind_shear
+        self.mean_hub_wind_speed = float(np.mean(ws_hub))
         self._set_dominant_wind_bin(ws_hub, wd_in)
         
         # Build Floris TimeSeries
@@ -297,9 +300,11 @@ class EconomicsManager:
     """
     Manages LandBOSSE execution and calculates economic metrics (LCOE, PI).
     """
-    def __init__(self, array_voltage, substation_coord, rated_power_kw, 
-                 turbine_costs, om_costs, rental_costs, electricity_price, 
-                 nominal_discount_rate, project_lifetime):
+    def __init__(self, array_voltage, substation_coord, rated_power_kw,
+                 turbine_costs, om_costs, rental_costs,
+                 nominal_discount_rate, project_lifetime,
+                 electricity_price_model, project_start_year,
+                 hub_height, wind_speed_hub, theta_shear):
         
         self.array_voltage = array_voltage
         self.substation_coord = substation_coord
@@ -307,9 +312,23 @@ class EconomicsManager:
         self.turbine_costs = turbine_costs
         self.om_costs = om_costs
         self.rental_costs = rental_costs
-        self.electricity_price = electricity_price
         self.nominal_discount_rate = nominal_discount_rate
         self.project_lifetime = project_lifetime
+        self.electricity_price_model = electricity_price_model
+        self.project_start_year = project_start_year
+        self.hub_height = hub_height
+        self.wind_speed_hub = wind_speed_hub
+        self.theta_shear = theta_shear
+
+    def _get_spot_price_for_year(self, year):
+        annual_average_price = self.electricity_price_model.get('annual_average_price_by_year_usd_per_mwh') if self.electricity_price_model is not None else None
+        site_coefficient = self.electricity_price_model.get('site_coefficient') if self.electricity_price_model is not None else None
+        site_wind_factor = self.electricity_price_model.get('site_wind_factor') if self.electricity_price_model is not None else None
+        reference_hub_height = self.electricity_price_model.get('reference_hub_height_m') if self.electricity_price_model is not None else None
+
+        A = annual_average_price.get(str(year)) if annual_average_price is not None else None
+        wind_term = site_wind_factor * ((reference_hub_height / self.hub_height) ** self.theta_shear) * self.wind_speed_hub
+        return A * (site_coefficient - wind_term)
 
     def calculate_metrics(self, layout_real, aep_wh, num_turbines):
         """
@@ -332,16 +351,26 @@ class EconomicsManager:
         turbine_cost_total = self.turbine_costs * total_capacity_mw
         initial_investment = turbine_cost_total + bos_cost_total
         annual_om_cost = (self.om_costs * aep_kwh) + (self.rental_costs * total_capacity_mw)
-        
+
         d = self.nominal_discount_rate
         n = self.project_lifetime
-        annuity_factor = ((1 + d)**n - 1) / (d * (1 + d)**n)
-        
-        lcoe = (initial_investment / (aep_mwh * annuity_factor)) + (annual_om_cost / aep_mwh)
-        
-        annual_revenue = aep_mwh * self.electricity_price
-        net_cash_flow = annual_revenue - annual_om_cost
-        pi = (net_cash_flow * annuity_factor) / initial_investment
+        discounted_energy_total = 0.0
+        discounted_om_total = 0.0
+        discounted_net_cash_flow_total = 0.0
+
+        for year_offset in range(n):
+            year = self.project_start_year + year_offset
+            spot_price = self._get_spot_price_for_year(year)
+            annual_revenue = aep_mwh * spot_price
+            annual_net_cash_flow = annual_revenue - annual_om_cost
+            discount_factor = 1.0 / ((1.0 + d) ** (year_offset + 1))
+
+            discounted_energy_total += aep_mwh * discount_factor
+            discounted_om_total += annual_om_cost * discount_factor
+            discounted_net_cash_flow_total += annual_net_cash_flow * discount_factor
+
+        lcoe = (initial_investment + discounted_om_total) / discounted_energy_total
+        pi = discounted_net_cash_flow_total / initial_investment
         
         return pi, lcoe
 
@@ -838,71 +867,90 @@ class LayoutOptimizer:
 # ==========================================
 
 if __name__ == "__main__":
-    
-    # ------------------ Inputs ------------------
-    SHAPEFILE_PATH = "selected_site_schlegelmuehle/ausgewahlflächen_schlegelmuehle.shp"
-    NC_FILE_PATH = "essai10_schlegelmuehle.nc"
-    
-    TURBINE_DIAMETER = 130 # meters
-    MIN_DISTANCE_M = 2 * TURBINE_DIAMETER
-    RATED_POWER_KW = 3370
-    
-    TARGET_MIN_MW = 45
-    TARGET_MAX_MW = 50
-    NUM_RANDOM_STARTS = 20 # Increase for heavier exploration
-    
-    # Substation coordinate must be evaluated/placed prior based on site geometry
-    SUBSTATION_COORD = np.array([[694264.9, 5570861.7]]) # EPSG 25832 (UTM Zone 32N)
-    # --------------------------------------------
+    CONFIG_PATH = "configs/schlegelmuehle.json"
+
+    with open(CONFIG_PATH, mode='r', encoding='utf-8') as config_file:
+        config = json.load(config_file)
+
+    site_config = config.get('site')
+    wind_config = config.get('wind')
+    turbine_config = config.get('turbine')
+    optimization_config = config.get('optimization')
+    substation_config = config.get('substation')
+    floris_config = config.get('floris')
+    economics_config = config.get('economics')
+
+    shapefile_path = site_config.get('shapefile_path') if site_config is not None else None
+    nc_file_path = wind_config.get('nc_file_path') if wind_config is not None else None
+    turbine_diameter = turbine_config.get('diameter_m') if turbine_config is not None else None
+    rated_power_kw = turbine_config.get('rated_power_kw') if turbine_config is not None else None
+    min_distance_multiplier = optimization_config.get('min_distance_multiplier') if optimization_config is not None else None
+    min_distance_m = (
+        min_distance_multiplier * turbine_diameter
+        if min_distance_multiplier is not None and turbine_diameter is not None
+        else None
+    )
+    target_min_mw = optimization_config.get('target_min_mw') if optimization_config is not None else None
+    target_max_mw = optimization_config.get('target_max_mw') if optimization_config is not None else None
+    num_random_starts = optimization_config.get('num_random_starts') if optimization_config is not None else None
+    substation_coord = (
+        np.array(substation_config.get('coordinates'))
+        if substation_config is not None and substation_config.get('coordinates') is not None
+        else None
+    )
     
     try:
-        site_mgr = SiteManager(shapefile_path=SHAPEFILE_PATH)
+        site_mgr = SiteManager(shapefile_path=shapefile_path)
         
         wind_mgr = WindManager(
-            nc_file_path=NC_FILE_PATH,
-            ref_height_in=10,
-            hub_height_out=120,
-            wind_shear=0.2,
-            ti=0.06,
-            d_ws=0.5,
-            d_wd=1
+            nc_file_path=nc_file_path,
+            ref_height_in=wind_config.get('ref_height_in') if wind_config is not None else None,
+            hub_height_out=wind_config.get('hub_height_out') if wind_config is not None else None,
+            wind_shear=wind_config.get('wind_shear') if wind_config is not None else None,
+            ti=wind_config.get('ti') if wind_config is not None else None,
+            d_ws=wind_config.get('d_ws') if wind_config is not None else None,
+            d_wd=wind_config.get('d_wd') if wind_config is not None else None
         )
         
         floris_mgr = FlorisManager(
-            wake_model_path=r"inputs/gch.yaml",
-            turbine_type="IEA3_4_MW",
-            reference_wind_height=120,
-            wind_shear=0.2,
+            wake_model_path=floris_config.get('wake_model_path') if floris_config is not None else None,
+            turbine_type=floris_config.get('turbine_type') if floris_config is not None else None,
+            reference_wind_height=floris_config.get('reference_wind_height') if floris_config is not None else None,
+            wind_shear=floris_config.get('wind_shear') if floris_config is not None else None,
             wind_rose=wind_mgr.wind_rose,
             dominant_wind_speed=wind_mgr.dominant_wind_speed,
             dominant_wind_direction=wind_mgr.dominant_wind_direction
         )
         
         econ_mgr = EconomicsManager(
-            array_voltage=30,
-            substation_coord=SUBSTATION_COORD,
-            rated_power_kw=RATED_POWER_KW,
-            turbine_costs=1.3 * 1e6,
-            om_costs=0.016,
-            rental_costs=20000,
-            electricity_price=67,
-            nominal_discount_rate=0.04,
-            project_lifetime=20
+            array_voltage=economics_config.get('array_voltage') if economics_config is not None else None,
+            substation_coord=substation_coord,
+            rated_power_kw=rated_power_kw,
+            turbine_costs=economics_config.get('turbine_costs') if economics_config is not None else None,
+            om_costs=economics_config.get('om_costs') if economics_config is not None else None,
+            rental_costs=economics_config.get('rental_costs') if economics_config is not None else None,
+            nominal_discount_rate=economics_config.get('nominal_discount_rate') if economics_config is not None else None,
+            project_lifetime=economics_config.get('project_lifetime') if economics_config is not None else None,
+            electricity_price_model=economics_config.get('electricity_price_model') if economics_config is not None else None,
+            project_start_year=economics_config.get('project_start_year') if economics_config is not None else None,
+            hub_height=wind_config.get('hub_height_out') if wind_config is not None else None,
+            wind_speed_hub=wind_mgr.mean_hub_wind_speed,
+            theta_shear=wind_config.get('wind_shear') if wind_config is not None else None
         )
         
         optimizer = LayoutOptimizer(
             site_manager=site_mgr,
             floris_manager=floris_mgr,
             econ_manager=econ_mgr,
-            min_separation_m=MIN_DISTANCE_M,
-            opt_method='COBYLA' # Switch to SLSQP if desired
+            min_separation_m=min_distance_m,
+            opt_method=optimization_config.get('opt_method') if optimization_config is not None else None
         )
         
         # Execute Top-Level Loop
         best_layout_norm, best_init_layout_norm, best_init_debug, best_n, comp_time = optimizer.run_capacity_top_loop(
-            target_mw_min=TARGET_MIN_MW, 
-            target_mw_max=TARGET_MAX_MW, 
-            num_random_starts=NUM_RANDOM_STARTS
+            target_mw_min=target_min_mw,
+            target_mw_max=target_max_mw,
+            num_random_starts=num_random_starts
         )
         
         # Output final overall results
