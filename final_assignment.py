@@ -571,7 +571,7 @@ class LayoutOptimizer:
         layout_norm = layout_flat_norm.reshape(self.current_num_turbines, 2)
         self.current_run_history_norm.append(layout_norm.copy())
         if not self._layout_is_feasible(layout_norm):
-            return 1e9
+            return 10 # Large penalty for infeasibility
 
         layout_real = self.site.denormalize_coords(layout_norm)
         
@@ -633,7 +633,7 @@ class LayoutOptimizer:
 
         opt_options = {'disp': True, 'maxiter': 200}
         if self.opt_method == 'COBYLA':
-            opt_options['rhobeg'] = 0.05
+            opt_options['rhobeg'] = 0.08
             opt_options['catol'] = 1e-4
             opt_options['tol'] = 5e-4
 
@@ -773,14 +773,14 @@ class LayoutOptimizer:
         )
         
         ax1.set_aspect('equal')
-        ax1.set_xlabel('Easting [m]')
-        ax1.set_ylabel('Northing [m]')
-        ax1.set_title(f'Ultimate Optimal Wind Farm (N={num_turbines})')
+        ax1.set_xlabel('East [m]')
+        ax1.set_ylabel('North [m]')
+        ax1.set_title(f'Optimal Wind Farm (N={num_turbines})')
         ax1.legend()
         ax1.grid(True)
         
         results_text = (
-            f"--- GLOBAL OPTIMUM FOUND ---\n"
+            f"--- OPTIMUM FOUND ---\n"
             f"Turbines: {num_turbines} ({(num_turbines * 3.37):.2f} MW)\n"
             f"Total Compute Time: {total_time:.2f} s\n"
             f"Final PI: {pi:.4f}\n"
@@ -852,8 +852,8 @@ class LayoutOptimizer:
         ax_map.scatter(final_real[:, 0], final_real[:, 1], marker='o', s=35, color='green', label='Final Turbines')
         ax_map.scatter(self.econ.substation_coord[0, 0], self.econ.substation_coord[0, 1], marker='s', color='orange', s=80, label='Substation')
         ax_map.set_aspect('equal')
-        ax_map.set_xlabel('Easting [m]')
-        ax_map.set_ylabel('Northing [m]')
+        ax_map.set_xlabel('East [m]')
+        ax_map.set_ylabel('North [m]')
         ax_map.set_title('Tier-1 Viable Boundary Candidates and Best Layout Coordinates')
         ax_map.grid(True, alpha=0.35)
         ax_map.legend(loc='best')
@@ -867,7 +867,7 @@ class LayoutOptimizer:
 # ==========================================
 
 if __name__ == "__main__":
-    CONFIG_PATH = "configs/schlegelmuehle.json"
+    CONFIG_PATH = "configs/schlegelmuehle.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
 
     with open(CONFIG_PATH, mode='r', encoding='utf-8') as config_file:
         config = json.load(config_file)
