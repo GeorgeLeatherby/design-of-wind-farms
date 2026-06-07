@@ -565,6 +565,40 @@ class LayoutOptimizer:
         y_cand = rng.uniform(0.0, 1.0)
         return np.array([x_cand, y_cand], dtype=float)
 
+    def _compute_upwind_unit_vector(self):
+        """
+        Returns the unit vector pointing into the dominant wind (towards the
+        direction the wind blows from). Normalization scales both axes equally,
+        so the real-space bearing vector is valid directly in normalized space.
+        Returns None if no dominant wind direction is available.
+        """
+        wd_deg = self.floris.dominant_wind_direction
+        if wd_deg is None:
+            return None
+        wd_rad = np.deg2rad(wd_deg)
+        return np.array([np.sin(wd_rad), np.cos(wd_rad)], dtype=float)
+
+    def _corridor_is_clear(self, cand_norm, placed_norm, upwind_unit, half_width_norm):
+        """
+        Returns True if no already-placed turbine lies within the upwind corridor
+        extending from the candidate into the dominant wind. The corridor has a
+        total width of 2 * half_width_norm.
+        Expected shapes: cand_norm (2,), upwind_unit (2,) or None.
+        """
+        if upwind_unit is None or len(placed_norm) == 0:
+            return True
+
+        cand = np.asarray(cand_norm, dtype=float)
+        for placed_pt in placed_norm:
+            offset = np.asarray(placed_pt, dtype=float) - cand
+            along = float(np.dot(offset, upwind_unit))
+            if along <= 0.0:
+                continue  # Placed turbine is downwind, outside the upwind corridor.
+            perp = abs(offset[0] * upwind_unit[1] - offset[1] * upwind_unit[0])
+            if perp <= half_width_norm:
+                return False  # A placed turbine sits inside the upwind corridor.
+        return True
+
     def _run_single_edge_tier_attempt(self, edge_candidates, num_turbines, rng):
         """
         Runs one stochastic tier-1 attempt and returns placed/viable edge points.
@@ -662,6 +696,80 @@ class LayoutOptimizer:
             )
 
         self._log("      [Init] Feasible initial layout found.")
+
+        edge_candidates_arr = np.array(edge_candidates) if edge_candidates.size else np.empty((0, 2), dtype=float)
+        viable_edge_arr = np.array(viable_edge_candidates) if len(viable_edge_candidates) > 0 else np.empty((0, 2), dtype=float)
+        selected_edge_arr = np.array(selected_edge_positions) if len(selected_edge_positions) > 0 else np.empty((0, 2), dtype=float)
+
+        init_debug = {
+            'edge_candidates_norm': edge_candidates_arr,
+            'viable_edge_candidates_norm': self._unique_rows(viable_edge_arr),
+            'selected_edge_positions_norm': self._unique_rows(selected_edge_arr)
+        }
+
+        return np.array(layout_norm), init_debug
+
+    def generate_initial_layout_wind_corridor(self, num_turbines, rng, edge_offset_norm=0.01,
+                                              corridor_width_m=100.0, max_random_attempts=1000):
+        """
+        Wind-corridor initial solution generator (alternative heuristic):
+        1) Place turbines on edge spots that are unobstructed in the dominant
+           wind direction, i.e. their upwind corridor (width corridor_width_m)
+           contains no already-placed turbine.
+        2) Only once the edge heuristic can place no more turbines, fall back to
+           the existing tier-2 random interior placement.
+        """
+        self._log(
+            f"      [Init-Wind] Searching wind-corridor initial layout for N={num_turbines} "
+            f"(corridor_width_m={corridor_width_m:.0f}, random_try_limit={max_random_attempts})"
+        )
+        layout_norm = []
+        viable_edge_candidates = []
+        selected_edge_positions = []
+
+        upwind_unit = self._compute_upwind_unit_vector()
+        half_width_norm = (corridor_width_m / 2.0) / self.site.scale
+
+        edge_candidates = self._generate_edge_candidates(rng, edge_offset_norm=edge_offset_norm)
+        self._log(f"      [Init-Wind] Edge tier generated {edge_candidates.shape[0]} candidates.")
+
+        # Edge heuristic: place along all edge spots that stay unobstructed in the
+        # dominant wind direction, continuing over remaining spots until done.
+        for idx in range(edge_candidates.shape[0]):
+            if len(layout_norm) >= num_turbines:
+                break
+            cand_norm = edge_candidates[idx]
+            if not self._is_valid_point(cand_norm, layout_norm):
+                continue
+            if not self._corridor_is_clear(cand_norm, layout_norm, upwind_unit, half_width_norm):
+                continue
+            viable_edge_candidates.append(cand_norm.copy())
+            selected_edge_positions.append(cand_norm.copy())
+            layout_norm.append(cand_norm.copy())
+
+        self._log(
+            f"      [Init-Wind] Wind-corridor edge tier placed {len(layout_norm)}/{num_turbines} turbines."
+        )
+
+        random_attempts = 0
+        while len(layout_norm) < num_turbines and random_attempts < max_random_attempts:
+            cand_norm = self._sample_random_inside(rng)
+            random_attempts += 1
+            if self._is_valid_point(cand_norm, layout_norm):
+                layout_norm.append(cand_norm)
+
+        self._log(
+            f"      [Init-Wind] Random tier used {random_attempts} tries and reached "
+            f"{len(layout_norm)}/{num_turbines} turbines."
+        )
+
+        if len(layout_norm) < num_turbines:
+            raise RuntimeError(
+                f"Wind-corridor initial solution failed: could not place all {num_turbines} "
+                f"turbines after the edge heuristic and {max_random_attempts} random tries."
+            )
+
+        self._log("      [Init-Wind] Feasible wind-corridor initial layout found.")
 
         edge_candidates_arr = np.array(edge_candidates) if edge_candidates.size else np.empty((0, 2), dtype=float)
         viable_edge_arr = np.array(viable_edge_candidates) if len(viable_edge_candidates) > 0 else np.empty((0, 2), dtype=float)
@@ -879,7 +987,12 @@ class LayoutOptimizer:
                 print(f"   [Start {start_idx+1}/{num_random_starts}] Building initial layout...")
                 
                 try:
-                    init_norm, init_debug = self.generate_initial_layout(num_turbines, rng)
+                    # Always evaluate the wind-corridor heuristic first; remaining
+                    # starts use the existing quasi-uniform edge generator.
+                    if start_idx == 0:
+                        init_norm, init_debug = self.generate_initial_layout_wind_corridor(num_turbines, rng)
+                    else:
+                        init_norm, init_debug = self.generate_initial_layout(num_turbines, rng)
                 except RuntimeError as e:
                     print(f"   [Start {start_idx+1}/{num_random_starts}] Skipping: {e}")
                     continue # Skip if geometrically impossible
