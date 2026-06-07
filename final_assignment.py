@@ -808,7 +808,8 @@ class LayoutOptimizer:
 
         return res.x.reshape(num_turbines, 2), -res.fun
 
-    def run_capacity_top_loop(self, target_mw_min, target_mw_max, num_random_starts, num_aep_layouts_for_pi):
+    def run_capacity_top_loop(self, target_mw_min, target_mw_max, num_random_starts, num_aep_layouts_for_pi,
+                              result_writer=None, site_id=None):
         """
         Top level loop: iterates through valid turbine counts and performs
         multi-start optimization to find the absolute best overall layout.
@@ -895,6 +896,22 @@ class LayoutOptimizer:
                     f"PI={best_local_pi:.4f}"
                 )
 
+                # Persist every PI-optimized finalist without displaying figures.
+                if result_writer is not None and site_id is not None:
+                    layout_id = result_writer.build_layout_id(num_turbines=num_turbines, seed=finalist['seed'])
+                    self.plot_final_solution(
+                        final_norm,
+                        finalist['init_norm'],
+                        finalist['init_debug'],
+                        num_turbines,
+                        t_end - t_start,
+                        result_writer=result_writer,
+                        layout_id=layout_id,
+                        seed=finalist['seed'],
+                        site_id=site_id,
+                        show_plots=False
+                    )
+
                 capacity_best = max(capacity_best, best_local_pi)
 
                 if best_local_pi > global_best_pi:
@@ -918,7 +935,7 @@ class LayoutOptimizer:
         return global_best_layout_norm, global_best_init_layout_norm, global_best_init_debug, global_best_n, global_best_seed, global_time
 
     def plot_final_solution(self, final_layout_norm, initial_layout_norm, init_debug, num_turbines, total_time,
-                            result_writer=None, layout_id=None, seed=None, site_id=None):
+                            result_writer=None, layout_id=None, seed=None, site_id=None, show_plots=True):
         """
         Plots the ultimate winning layout and evaluates its metrics.
         Also adds a wake top-view and a diagnostics figure with coordinate table.
@@ -1078,7 +1095,12 @@ class LayoutOptimizer:
             }
             result_writer.update_ranking(ranking_entry)
 
-        plt.show()
+        if show_plots:
+            plt.show()
+        else:
+            plt.close(fig)
+            plt.close(fig2)
+            plt.close(fig3)
 
 
 # ==========================================
@@ -1180,21 +1202,18 @@ if __name__ == "__main__":
             target_mw_min=target_min_mw,
             target_mw_max=target_max_mw,
             num_random_starts=num_random_starts,
-            num_aep_layouts_for_pi=num_aep_layouts_for_pi
+            num_aep_layouts_for_pi=num_aep_layouts_for_pi,
+            result_writer=result_writer,
+            site_id=site_id
         )
         
-        # Output final overall results
-        layout_id = result_writer.build_layout_id(num_turbines=best_n, seed=best_seed)
+        # Output final overall results (display only; artifacts already persisted per PI finalist).
         optimizer.plot_final_solution(
             best_layout_norm,
             best_init_layout_norm,
             best_init_debug,
             best_n,
-            comp_time,
-            result_writer=result_writer,
-            layout_id=layout_id,
-            seed=best_seed,
-            site_id=site_id
+            comp_time
         )
         
     except Exception as e:
