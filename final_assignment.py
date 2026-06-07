@@ -92,7 +92,8 @@ class WindManager:
     Handles the extraction of NetCDF wind data, scaling to hub height via the power law,
     and the generation of the Floris WindRose object.
     """
-    def __init__(self, nc_file_path, ref_height_in, hub_height_out, wind_shear, ti, d_ws, d_wd):
+    def __init__(self, nc_file_path, ref_height_in, hub_height_out, wind_shear, ti,
+                 discretization_aep, discretization_pi):
         """
         Extracts, formats, and bins wind data directly upon instantiation.
         """
@@ -101,22 +102,25 @@ class WindManager:
         self.hub_height_out = hub_height_out
         self.wind_shear = wind_shear
         self.ti = ti
-        self.d_ws = d_ws
-        self.d_wd = d_wd
+        self.discretization_aep = discretization_aep
+        self.discretization_pi = discretization_pi
         self.dominant_wind_speed = None
         self.dominant_wind_direction = None
         self.mean_hub_wind_speed = None
         
-        self.wind_rose = self._generate_windrose()
+        self.wind_rose_aep = self._generate_windrose(self.discretization_aep)
+        self.wind_rose_pi = self._generate_windrose(self.discretization_pi)
 
-    def _set_dominant_wind_bin(self, ws_hub, wd_in):
+    def _set_dominant_wind_bin(self, ws_hub, wd_in, discretization):
         """
         Finds the most frequent (ws, wd) bin using the same discretization
         used for the wind rose.
         """
+        d_ws = discretization.get('d_ws') if discretization is not None else None
+        d_wd = discretization.get('d_wd') if discretization is not None else None
         wd_wrapped = np.mod(wd_in, 360.0)
-        ws_edges = np.arange(0, 50 + self.d_ws, self.d_ws)
-        wd_edges = np.arange(0, 360 + self.d_wd, self.d_wd)
+        ws_edges = np.arange(0, 50 + d_ws, d_ws)
+        wd_edges = np.arange(0, 360 + d_wd, d_wd)
 
         hist, ws_bin_edges, wd_bin_edges = np.histogram2d(
             ws_hub,
@@ -133,10 +137,12 @@ class WindManager:
         self.dominant_wind_speed = 0.5 * (ws_bin_edges[i_ws] + ws_bin_edges[i_ws + 1])
         self.dominant_wind_direction = 0.5 * (wd_bin_edges[i_wd] + wd_bin_edges[i_wd + 1])
 
-    def _generate_windrose(self):
+    def _generate_windrose(self, discretization):
         """
         Internal method to process the .nc file and return the windrose object.
         """
+        d_ws = discretization.get('d_ws') if discretization is not None else None
+        d_wd = discretization.get('d_wd') if discretization is not None else None
         nc_dataset = Dataset(self.nc_file_path, mode='r')
         
         # Ensure extraction of time and standard 10m wind variables 
@@ -150,15 +156,15 @@ class WindManager:
         # Power Law Transformation to Hub Height
         ws_hub = ws_in * (self.hub_height_out / self.ref_height_in) ** self.wind_shear
         self.mean_hub_wind_speed = float(np.mean(ws_hub))
-        self._set_dominant_wind_bin(ws_hub, wd_in)
+        self._set_dominant_wind_bin(ws_hub, wd_in, self.discretization_pi)
         
         # Build Floris TimeSeries
         timeseries = TimeSeries(wind_speeds=ws_hub, wind_directions=wd_in, turbulence_intensities=self.ti)
         
-        # Create WindRose with specified strict discretization (1 deg, 0.5 m/s)
+        # Create WindRose with stage-specific discretization.
         wind_rose = timeseries.to_WindRose(
-            wd_edges=np.arange(0, 360 + self.d_wd, self.d_wd),
-            ws_edges=np.arange(0, 50 + self.d_ws, self.d_ws)
+            wd_edges=np.arange(0, 360 + d_wd, d_wd),
+            ws_edges=np.arange(0, 50 + d_ws, d_ws)
         )
         return wind_rose
 
@@ -177,7 +183,8 @@ class FlorisManager:
         turbine_type,
         reference_wind_height,
         wind_shear,
-        wind_rose,
+        wind_rose_aep,
+        wind_rose_pi,
         dominant_wind_speed=None,
         dominant_wind_direction=None
     ):
@@ -185,20 +192,38 @@ class FlorisManager:
         self.turbine_type = turbine_type
         self.reference_wind_height = reference_wind_height
         self.wind_shear = wind_shear
-        self.wind_rose = wind_rose
+        self.wind_rose_aep = wind_rose_aep
+        self.wind_rose_pi = wind_rose_pi
         self.dominant_wind_speed = dominant_wind_speed
         self.dominant_wind_direction = dominant_wind_direction
         self.fmodel = FlorisModel(self.wake_model_path)
 
-    def evaluate_layout(self, layout_real):
+    def evaluate_layout_aep(self, layout_real):
         """
-        Runs the FLORIS model for a given layout (in meters) and returns AEP.
+        Runs FLORIS with the AEP-stage wind rose and returns wake AEP only.
         Expected shape: layout_real (N, 2)
         """
         self.fmodel.set(
             layout_x=layout_real[:, 0],
             layout_y=layout_real[:, 1],
-            wind_data=self.wind_rose,
+            wind_data=self.wind_rose_aep,
+            turbine_type=[self.turbine_type],
+            reference_wind_height=self.reference_wind_height,
+            wind_shear=self.wind_shear
+        )
+
+        self.fmodel.run()
+        return self.fmodel.get_farm_AEP()
+
+    def evaluate_layout_pi(self, layout_real):
+        """
+        Runs FLORIS with the PI-stage wind rose and returns wake/no-wake AEP.
+        Expected shape: layout_real (N, 2)
+        """
+        self.fmodel.set(
+            layout_x=layout_real[:, 0],
+            layout_y=layout_real[:, 1],
+            wind_data=self.wind_rose_pi,
             turbine_type=[self.turbine_type],
             reference_wind_height=self.reference_wind_height,
             wind_shear=self.wind_shear
@@ -209,7 +234,7 @@ class FlorisManager:
 
         self.fmodel.run_no_wake()
         aep_no_wake = self.fmodel.get_farm_AEP()
-        
+
         return aep_wake, aep_no_wake
 
     def plot_final_wake_top_view(
@@ -385,7 +410,7 @@ class LayoutOptimizer:
     turbine counts and boundary-biased random initializations.
     """
     def __init__(self, site_manager, floris_manager, econ_manager,
-                 min_separation_m, opt_method, verbose=True, objective_log_every=1):
+                 min_separation_m, opt_method, verbose=True, objective_log_every=5):
         self.site = site_manager
         self.floris = floris_manager
         self.econ = econ_manager
@@ -396,6 +421,7 @@ class LayoutOptimizer:
         self.objective_log_every = objective_log_every
         self.obj_eval_count = 0
         self.best_eval_pi = -np.inf
+        self.best_eval_aep = -np.inf
         self.current_run_history_norm = []
         self.last_run_history_norm = []
 
@@ -575,7 +601,7 @@ class LayoutOptimizer:
 
         layout_real = self.site.denormalize_coords(layout_norm)
         
-        aep_wake, _ = self.floris.evaluate_layout(layout_real)
+        aep_wake, _ = self.floris.evaluate_layout_pi(layout_real)
         pi, _ = self.econ.calculate_metrics(layout_real, aep_wake, self.current_num_turbines)
 
         if pi > self.best_eval_pi:
@@ -588,17 +614,33 @@ class LayoutOptimizer:
         
         return -pi
 
-    def run_optimization(self, initial_layout_norm, num_turbines):
+    def _aep_objective_function(self, layout_flat_norm):
         """
-        Executes SciPy optimization for a single layout.
+        SciPy objective function (Minimizes -AEP).
         """
-        self.current_num_turbines = num_turbines
-        self.obj_eval_count = 0
-        self.best_eval_pi = -np.inf
-        self.current_run_history_norm = [initial_layout_norm.copy()]
-        x0 = initial_layout_norm.flatten()
+        self.obj_eval_count += 1
+        layout_norm = layout_flat_norm.reshape(self.current_num_turbines, 2)
+        self.current_run_history_norm.append(layout_norm.copy())
+        if not self._layout_is_feasible(layout_norm):
+            return 10
+
+        layout_real = self.site.denormalize_coords(layout_norm)
+        aep_wake = self.floris.evaluate_layout_aep(layout_real)
+
+        if aep_wake > self.best_eval_aep:
+            self.best_eval_aep = aep_wake
+
+        if self.objective_log_every > 0 and (self.obj_eval_count % self.objective_log_every == 0):
+            self._log(
+                f"      [AEP] Eval {self.obj_eval_count}: AEP={aep_wake/1e9:.4f} GWh, "
+                f"best_eval_AEP={self.best_eval_aep/1e9:.4f} GWh"
+            )
+
+        return -aep_wake
+
+    def _build_constraints(self, num_turbines):
         constraints = []
-        
+
         def boundary_constraint(var, idx):
             x, y = var[2 * idx], var[2 * idx + 1]
             return self.site.get_distance_to_boundary(x, y)
@@ -614,38 +656,68 @@ class LayoutOptimizer:
 
         def upper_y_constraint(var, idx):
             return 1.0 - var[2 * idx + 1]
-            
+
         for i in range(num_turbines):
             constraints.append({'type': 'ineq', 'fun': boundary_constraint, 'args': (i,)})
             constraints.append({'type': 'ineq', 'fun': lower_x_constraint, 'args': (i,)})
             constraints.append({'type': 'ineq', 'fun': upper_x_constraint, 'args': (i,)})
             constraints.append({'type': 'ineq', 'fun': lower_y_constraint, 'args': (i,)})
             constraints.append({'type': 'ineq', 'fun': upper_y_constraint, 'args': (i,)})
-            
+
         def distance_constraint(var, i, j):
             xi, yi = var[2 * i], var[2 * i + 1]
             xj, yj = var[2 * j], var[2 * j + 1]
             return np.sqrt((xi - xj)**2 + (yi - yj)**2) - self.min_dist_norm
-            
+
         for i in range(num_turbines):
             for j in range(i + 1, num_turbines):
                 constraints.append({'type': 'ineq', 'fun': distance_constraint, 'args': (i, j)})
 
+        return constraints
+
+    def _build_opt_options(self):
         opt_options = {'disp': True, 'maxiter': 200}
         if self.opt_method == 'COBYLA':
             opt_options['rhobeg'] = 0.08
             opt_options['catol'] = 1e-4
             opt_options['tol'] = 5e-4
+        return opt_options
+
+    def _run_optimization_stage(self, initial_layout_norm, num_turbines, objective_function, stage_label):
+        self.current_num_turbines = num_turbines
+        self.obj_eval_count = 0
+        self.best_eval_pi = -np.inf
+        self.best_eval_aep = -np.inf
+        self.current_run_history_norm = [initial_layout_norm.copy()]
+        x0 = initial_layout_norm.flatten()
+        constraints = self._build_constraints(num_turbines)
+        opt_options = self._build_opt_options()
 
         self._log(
-            f"      [Opt] Starting {self.opt_method} for N={num_turbines} with "
+            f"      [{stage_label}] Starting {self.opt_method} for N={num_turbines} with "
             f"{len(constraints)} constraints."
         )
 
-        
         res = minimize(
-            fun=self._objective_function, x0=x0, method=self.opt_method,
-            constraints=constraints, options=opt_options
+            fun=objective_function,
+            x0=x0,
+            method=self.opt_method,
+            constraints=constraints,
+            options=opt_options
+        )
+
+        self.last_run_history_norm = [step.copy() for step in self.current_run_history_norm]
+        return res
+
+    def run_optimization(self, initial_layout_norm, num_turbines):
+        """
+        Executes SciPy optimization for a single layout.
+        """
+        res = self._run_optimization_stage(
+            initial_layout_norm=initial_layout_norm,
+            num_turbines=num_turbines,
+            objective_function=self._objective_function,
+            stage_label='PI'
         )
 
         self._log(
@@ -653,11 +725,27 @@ class LayoutOptimizer:
             f"status={res.status}, nfev={getattr(res, 'nfev', 'n/a')}, "
             f"best_local_PI={-res.fun:.4f}"
         )
-
-        # Keep the most recent run trajectory available and overwrite on next run.
-        self.last_run_history_norm = [step.copy() for step in self.current_run_history_norm]
         
         return res.x.reshape(num_turbines, 2), -res.fun # Return layout and positive PI
+
+    def run_aep_optimization(self, initial_layout_norm, num_turbines):
+        """
+        Executes SciPy optimization for a single layout using AEP only.
+        """
+        res = self._run_optimization_stage(
+            initial_layout_norm=initial_layout_norm,
+            num_turbines=num_turbines,
+            objective_function=self._aep_objective_function,
+            stage_label='AEP'
+        )
+
+        self._log(
+            f"      [AEP] Finished {self.opt_method}: success={res.success}, "
+            f"status={res.status}, nfev={getattr(res, 'nfev', 'n/a')}, "
+            f"best_local_AEP={-res.fun/1e9:.4f} GWh"
+        )
+
+        return res.x.reshape(num_turbines, 2), -res.fun
 
     def run_capacity_top_loop(self, target_mw_min, target_mw_max, num_random_starts):
         """
@@ -679,6 +767,7 @@ class LayoutOptimizer:
         for num_turbines in range(min_turbines, max_turbines + 1):
             print(f"\n--- Testing Capacity: {num_turbines} Turbines ({(num_turbines * 3.37):.2f} MW) ---")
             capacity_best = -np.inf
+            aep_candidates = []
             
             for start_idx in range(num_random_starts):
                 seed = secrets.randbits(64)
@@ -694,28 +783,62 @@ class LayoutOptimizer:
 
                 print(
                     f"   [Start {start_idx+1}/{num_random_starts}] Initial layout accepted. "
-                    f"Launching optimization..."
+                    f"Launching AEP optimization..."
                 )
-                
-                print(f"   [Start {start_idx+1}/{num_random_starts}] Optimizing layout...")
-                
+
                 t_start = time.time()
-                final_norm, best_local_pi = self.run_optimization(init_norm, num_turbines)
+                aep_layout_norm, best_local_aep = self.run_aep_optimization(init_norm, num_turbines)
                 t_end = time.time()
                 global_time += (t_end - t_start)
 
                 print(
                     f"   [Start {start_idx+1}/{num_random_starts}] Done in {t_end - t_start:.2f}s, "
+                    f"AEP={best_local_aep/1e9:.4f} GWh"
+                )
+
+                aep_candidates.append({
+                    'aep': best_local_aep,
+                    'layout_norm': aep_layout_norm.copy(),
+                    'init_norm': init_norm.copy(),
+                    'init_debug': init_debug
+                })
+
+            if len(aep_candidates) == 0:
+                print(f"--- Capacity Summary N={num_turbines}: no feasible initial layout found. ---")
+                continue
+
+            aep_candidates.sort(key=lambda candidate: candidate['aep'], reverse=True)
+            pi_finalists = aep_candidates[:5]
+
+            print(
+                f"   [AEP] Selected {len(pi_finalists)} layouts for PI optimization "
+                f"from {len(aep_candidates)} AEP-optimized candidates."
+            )
+
+            for finalist_idx, finalist in enumerate(pi_finalists):
+                print(
+                    f"   [PI {finalist_idx+1}/{len(pi_finalists)}] Optimizing AEP finalist "
+                    f"with AEP={finalist['aep']/1e9:.4f} GWh..."
+                )
+
+                t_start = time.time()
+                final_norm, best_local_pi = self.run_optimization(finalist['layout_norm'], num_turbines)
+                t_end = time.time()
+                global_time += (t_end - t_start)
+
+                print(
+                    f"   [PI {finalist_idx+1}/{len(pi_finalists)}] Done in {t_end - t_start:.2f}s, "
                     f"PI={best_local_pi:.4f}"
                 )
+
                 capacity_best = max(capacity_best, best_local_pi)
-                
+
                 if best_local_pi > global_best_pi:
                     global_best_pi = best_local_pi
                     global_best_layout_norm = final_norm
-                    global_best_init_layout_norm = init_norm.copy()
+                    global_best_init_layout_norm = finalist['init_norm'].copy()
                     global_best_n = num_turbines
-                    global_best_init_debug = init_debug
+                    global_best_init_debug = finalist['init_debug']
                     print(f"   --> New Best Layout Found! PI: {best_local_pi:.4f}")
 
             if capacity_best > -np.inf:
@@ -723,8 +846,6 @@ class LayoutOptimizer:
                     f"--- Capacity Summary N={num_turbines}: best PI={capacity_best:.4f}, "
                     f"global best PI={global_best_pi:.4f} ---"
                 )
-            else:
-                print(f"--- Capacity Summary N={num_turbines}: no feasible initial layout found. ---")
 
         if global_best_layout_norm is None:
             raise RuntimeError("Optimization completely failed. Space may be too restricted.")
@@ -739,7 +860,7 @@ class LayoutOptimizer:
         final_real = self.site.denormalize_coords(final_layout_norm)
         init_real = self.site.denormalize_coords(initial_layout_norm)
         
-        aep_wake, aep_nw = self.floris.evaluate_layout(final_real)
+        aep_wake, aep_nw = self.floris.evaluate_layout_pi(final_real)
         pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines)
         
         eff = (aep_wake / aep_nw) * 100
@@ -879,6 +1000,10 @@ if __name__ == "__main__":
     substation_config = config.get('substation')
     floris_config = config.get('floris')
     economics_config = config.get('economics')
+    # Expected shape: {'aep': {'d_wd': float, 'd_ws': float}, 'pi': {'d_wd': float, 'd_ws': float}}
+    wind_discretization_config = wind_config.get('discretization') if wind_config is not None else None
+    aep_discretization_config = wind_discretization_config.get('aep') if wind_discretization_config is not None else None
+    pi_discretization_config = wind_discretization_config.get('pi') if wind_discretization_config is not None else None
 
     shapefile_path = site_config.get('shapefile_path') if site_config is not None else None
     nc_file_path = wind_config.get('nc_file_path') if wind_config is not None else None
@@ -908,8 +1033,8 @@ if __name__ == "__main__":
             hub_height_out=wind_config.get('hub_height_out') if wind_config is not None else None,
             wind_shear=wind_config.get('wind_shear') if wind_config is not None else None,
             ti=wind_config.get('ti') if wind_config is not None else None,
-            d_ws=wind_config.get('d_ws') if wind_config is not None else None,
-            d_wd=wind_config.get('d_wd') if wind_config is not None else None
+            discretization_aep=aep_discretization_config,
+            discretization_pi=pi_discretization_config
         )
         
         floris_mgr = FlorisManager(
@@ -917,7 +1042,8 @@ if __name__ == "__main__":
             turbine_type=floris_config.get('turbine_type') if floris_config is not None else None,
             reference_wind_height=floris_config.get('reference_wind_height') if floris_config is not None else None,
             wind_shear=floris_config.get('wind_shear') if floris_config is not None else None,
-            wind_rose=wind_mgr.wind_rose,
+            wind_rose_aep=wind_mgr.wind_rose_aep,
+            wind_rose_pi=wind_mgr.wind_rose_pi,
             dominant_wind_speed=wind_mgr.dominant_wind_speed,
             dominant_wind_direction=wind_mgr.dominant_wind_direction
         )

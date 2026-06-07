@@ -8,8 +8,16 @@
     "hub_height_out": null,
     "wind_shear": null,
     "ti": 0.06,
-    "d_ws": 0.5,
-    "d_wd": 1
+    "discretization": {
+      "aep": {
+        "d_wd": 5,
+        "d_ws": 1
+      },
+      "pi": {
+        "d_wd": 1,
+        "d_ws": 1
+      }
+    }
   },
   "turbine": {
     "diameter_m": null,
