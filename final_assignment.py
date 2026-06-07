@@ -9,16 +9,76 @@ Includes NetCDF wind data extraction, multi-start randomization, and strict cons
 import time
 import secrets
 import json
+import os
+import csv
 import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import Point
+from datetime import datetime
 from netCDF4 import Dataset, num2date
 from scipy.optimize import minimize
 
 from floris import FlorisModel, TimeSeries
 from floris.flow_visualization import visualize_cut_plane
 from external.landbosse.landbosse.main_function import run_landbosse
+
+
+class ResultWriter:
+    """
+    Persists per-site optimization artifacts under a fixed folder structure.
+    """
+    def __init__(self, site_id, site_root):
+        self.site_id = site_id
+        self.site_root = site_root
+        self.inputs_dir = os.path.join(self.site_root, 'inputs')
+        self.results_dir = os.path.join(self.site_root, 'results')
+        self.layouts_dir = os.path.join(self.results_dir, 'layouts')
+        self.figures_dir = os.path.join(self.results_dir, 'figures')
+        self.ranking_csv_path = os.path.join(self.results_dir, f"{self.site_id}_ranking_pi.csv")
+        self.ranking_columns = [
+            'L_yy_mm_dd_hh_mm_N<x>_<seed>',
+            'PI',
+            'N turbines',
+            'AEP',
+            'efficiency',
+            'LCoE',
+            'capacity factor',
+            'installed MW'
+        ]
+        os.makedirs(self.inputs_dir, exist_ok=True)
+        os.makedirs(self.layouts_dir, exist_ok=True)
+        os.makedirs(self.figures_dir, exist_ok=True)
+
+    def build_layout_id(self, num_turbines, seed):
+        stamp = datetime.utcnow().strftime('%y_%m_%d_%H_%M')
+        return f"L_{stamp}_N{num_turbines}_{seed}"
+
+    def save_layout_json(self, layout_id, data):
+        path = os.path.join(self.layouts_dir, f"{layout_id}.json")
+        with open(path, mode='w', encoding='utf-8') as file_obj:
+            json.dump(data, file_obj, indent=2)
+
+    def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_table):
+        layout_prefix = layout_id.rsplit('_', 1)[0]
+        fig_map.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_map_{seed}.png"), dpi=150)
+        fig_wake.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_wake_{seed}.png"), dpi=150)
+        fig_table.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_table_{seed}.png"), dpi=150)
+
+    def update_ranking(self, ranking_entry):
+        rows = []
+        if os.path.exists(self.ranking_csv_path):
+            with open(self.ranking_csv_path, mode='r', encoding='utf-8', newline='') as file_obj:
+                reader = csv.DictReader(file_obj)
+                rows = list(reader)
+
+        rows.append(ranking_entry)
+        rows.sort(key=lambda row: float(row['PI']), reverse=True)
+
+        with open(self.ranking_csv_path, mode='w', encoding='utf-8', newline='') as file_obj:
+            writer = csv.DictWriter(file_obj, fieldnames=self.ranking_columns)
+            writer.writeheader()
+            writer.writerows(rows)
 
 # ==========================================
 # 1. Geospatial & Site Management
@@ -315,6 +375,7 @@ class FlorisManager:
         ax.legend(loc='upper right')
         ax.grid(True, alpha=0.25)
         fig.tight_layout()
+        return fig
 
 
 # ==========================================
@@ -747,7 +808,7 @@ class LayoutOptimizer:
 
         return res.x.reshape(num_turbines, 2), -res.fun
 
-    def run_capacity_top_loop(self, target_mw_min, target_mw_max, num_random_starts):
+    def run_capacity_top_loop(self, target_mw_min, target_mw_max, num_random_starts, num_aep_layouts_for_pi):
         """
         Top level loop: iterates through valid turbine counts and performs
         multi-start optimization to find the absolute best overall layout.
@@ -761,6 +822,7 @@ class LayoutOptimizer:
         global_best_layout_norm = None
         global_best_init_layout_norm = None
         global_best_n = 0
+        global_best_seed = None
         global_best_init_debug = None
         global_time = 0
         
@@ -800,7 +862,8 @@ class LayoutOptimizer:
                     'aep': best_local_aep,
                     'layout_norm': aep_layout_norm.copy(),
                     'init_norm': init_norm.copy(),
-                    'init_debug': init_debug
+                    'init_debug': init_debug,
+                    'seed': seed
                 })
 
             if len(aep_candidates) == 0:
@@ -808,7 +871,8 @@ class LayoutOptimizer:
                 continue
 
             aep_candidates.sort(key=lambda candidate: candidate['aep'], reverse=True)
-            pi_finalists = aep_candidates[:5]
+            top_k = max(1, int(num_aep_layouts_for_pi))
+            pi_finalists = aep_candidates[:top_k]
 
             print(
                 f"   [AEP] Selected {len(pi_finalists)} layouts for PI optimization "
@@ -838,6 +902,7 @@ class LayoutOptimizer:
                     global_best_layout_norm = final_norm
                     global_best_init_layout_norm = finalist['init_norm'].copy()
                     global_best_n = num_turbines
+                    global_best_seed = finalist['seed']
                     global_best_init_debug = finalist['init_debug']
                     print(f"   --> New Best Layout Found! PI: {best_local_pi:.4f}")
 
@@ -850,9 +915,10 @@ class LayoutOptimizer:
         if global_best_layout_norm is None:
             raise RuntimeError("Optimization completely failed. Space may be too restricted.")
             
-        return global_best_layout_norm, global_best_init_layout_norm, global_best_init_debug, global_best_n, global_time
+        return global_best_layout_norm, global_best_init_layout_norm, global_best_init_debug, global_best_n, global_best_seed, global_time
 
-    def plot_final_solution(self, final_layout_norm, initial_layout_norm, init_debug, num_turbines, total_time):
+    def plot_final_solution(self, final_layout_norm, initial_layout_norm, init_debug, num_turbines, total_time,
+                            result_writer=None, layout_id=None, seed=None, site_id=None):
         """
         Plots the ultimate winning layout and evaluates its metrics.
         Also adds a wake top-view and a diagnostics figure with coordinate table.
@@ -917,7 +983,7 @@ class LayoutOptimizer:
         plt.subplots_adjust(bottom=0.25)
 
         # Plot 2: FLORIS top-view wake map for the final layout.
-        self.floris.plot_final_wake_top_view(final_real, site_polygon=self.site.site_polygon)
+        fig2 = self.floris.plot_final_wake_top_view(final_real, site_polygon=self.site.site_polygon)
 
         # Plot 3: Coordinates table + tier-1 viable edge candidates diagnostics.
         fig3, (ax_tbl, ax_map) = plt.subplots(
@@ -980,6 +1046,38 @@ class LayoutOptimizer:
         ax_map.legend(loc='best')
         fig3.tight_layout()
 
+        if result_writer is not None and layout_id is not None and seed is not None and site_id is not None:
+            installed_mw = (self.econ.rated_power_kw / 1000.0) * num_turbines
+            payload = {
+                'site_id': site_id,
+                'timestamp': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+                'layout_id': layout_id,
+                'N turbines': int(num_turbines),
+                'seed': int(seed),
+                'PI': float(pi),
+                'AEP': float(aep_wake / 1e9),
+                'efficiency': float(eff),
+                'LCoE': float(lcoe),
+                'capacity factor': float(cf),
+                'installed MW': float(installed_mw),
+                # Expected shapes: initial_coordinates_m (N, 2), final_coordinates_m (N, 2)
+                'initial_coordinates_m': init_real.tolist(),
+                'final_coordinates_m': final_real.tolist()
+            }
+            result_writer.save_layout_json(layout_id, payload)
+            result_writer.save_figures(layout_id, seed, fig, fig2, fig3)
+            ranking_entry = {
+                'L_yy_mm_dd_hh_mm_N<x>_<seed>': layout_id,
+                'PI': f"{pi:.6f}",
+                'N turbines': str(num_turbines),
+                'AEP': f"{aep_wake / 1e9:.6f}",
+                'efficiency': f"{eff:.6f}",
+                'LCoE': f"{lcoe:.6f}",
+                'capacity factor': f"{cf:.6f}",
+                'installed MW': f"{installed_mw:.6f}"
+            }
+            result_writer.update_ranking(ranking_entry)
+
         plt.show()
 
 
@@ -988,6 +1086,7 @@ class LayoutOptimizer:
 # ==========================================
 
 if __name__ == "__main__":
+    
     CONFIG_PATH = "configs/schlegelmuehle.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
 
     with open(CONFIG_PATH, mode='r', encoding='utf-8') as config_file:
@@ -1004,6 +1103,8 @@ if __name__ == "__main__":
     wind_discretization_config = wind_config.get('discretization') if wind_config is not None else None
     aep_discretization_config = wind_discretization_config.get('aep') if wind_discretization_config is not None else None
     pi_discretization_config = wind_discretization_config.get('pi') if wind_discretization_config is not None else None
+    site_id = site_config.get('site_id') if site_config is not None else None
+    site_root = site_config.get('site_root') if site_config is not None else None
 
     shapefile_path = site_config.get('shapefile_path') if site_config is not None else None
     nc_file_path = wind_config.get('nc_file_path') if wind_config is not None else None
@@ -1018,6 +1119,7 @@ if __name__ == "__main__":
     target_min_mw = optimization_config.get('target_min_mw') if optimization_config is not None else None
     target_max_mw = optimization_config.get('target_max_mw') if optimization_config is not None else None
     num_random_starts = optimization_config.get('num_random_starts') if optimization_config is not None else None
+    num_aep_layouts_for_pi = optimization_config.get('num_aep_layouts_for_pi', 3) if optimization_config is not None else 3
     substation_coord = (
         np.array(substation_config.get('coordinates'))
         if substation_config is not None and substation_config.get('coordinates') is not None
@@ -1025,6 +1127,7 @@ if __name__ == "__main__":
     )
     
     try:
+        result_writer = ResultWriter(site_id=site_id, site_root=site_root)
         site_mgr = SiteManager(shapefile_path=shapefile_path)
         
         wind_mgr = WindManager(
@@ -1073,14 +1176,26 @@ if __name__ == "__main__":
         )
         
         # Execute Top-Level Loop
-        best_layout_norm, best_init_layout_norm, best_init_debug, best_n, comp_time = optimizer.run_capacity_top_loop(
+        best_layout_norm, best_init_layout_norm, best_init_debug, best_n, best_seed, comp_time = optimizer.run_capacity_top_loop(
             target_mw_min=target_min_mw,
             target_mw_max=target_max_mw,
-            num_random_starts=num_random_starts
+            num_random_starts=num_random_starts,
+            num_aep_layouts_for_pi=num_aep_layouts_for_pi
         )
         
         # Output final overall results
-        optimizer.plot_final_solution(best_layout_norm, best_init_layout_norm, best_init_debug, best_n, comp_time)
+        layout_id = result_writer.build_layout_id(num_turbines=best_n, seed=best_seed)
+        optimizer.plot_final_solution(
+            best_layout_norm,
+            best_init_layout_norm,
+            best_init_debug,
+            best_n,
+            comp_time,
+            result_writer=result_writer,
+            layout_id=layout_id,
+            seed=best_seed,
+            site_id=site_id
+        )
         
     except Exception as e:
         import traceback

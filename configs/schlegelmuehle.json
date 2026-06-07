@@ -1,9 +1,11 @@
 {
   "site": {
-    "shapefile_path": "selected_site_schlegelmuehle/ausgewahlflächen_schlegelmuehle.shp"
+    "site_id": "schlegelmuehle",
+    "site_root": "schlegelmuehle",
+    "shapefile_path": "schlegelmuehle/inputs/ausgewahlflächen_schlegelmuehle.shp"
   },
   "wind": {
-    "nc_file_path": "selected_site_schlegelmuehle/essai10_schlegelmuehle.nc",
+    "nc_file_path": "schlegelmuehle/inputs/essai10_schlegelmuehle.nc",
     "ref_height_in": 10,
     "hub_height_out": 120,
     "wind_shear": 0.2,
@@ -26,7 +28,8 @@
   "optimization": {
     "target_min_mw": 45,
     "target_max_mw": 50,
-    "num_random_starts": 1,
+    "num_random_starts": 30,
+    "num_aep_layouts_for_pi": 3,
     "min_distance_multiplier": 2,
     "opt_method": "COBYLA"
   },

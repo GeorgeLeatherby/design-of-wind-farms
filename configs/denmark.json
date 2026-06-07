@@ -1,5 +1,7 @@
 {
   "site": {
+    "site_id": "denmark",
+    "site_root": "denmark",
     "shapefile_path": null
   },
   "wind": {
@@ -26,7 +28,8 @@
   "optimization": {
     "target_min_mw": null,
     "target_max_mw": null,
-    "num_random_starts": null,
+    "num_random_starts": 30,
+    "num_aep_layouts_for_pi": 3,
     "min_distance_multiplier": 2,
     "opt_method": "COBYLA"
   },
