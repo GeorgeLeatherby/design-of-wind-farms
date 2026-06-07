@@ -4,10 +4,11 @@ __pycache__/
 *$py.class
 
 # Picture files
-.png
-.jpeg
-.jpg
-.gif
+*.png
+*.jpeg
+*.jpg
+*.gif
+
 
 # C extensions
 *.so
