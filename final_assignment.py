@@ -599,6 +599,31 @@ class LayoutOptimizer:
                 return False  # A placed turbine sits inside the upwind corridor.
         return True
 
+    def _wind_front_sort_key(self, cand_norm, upwind_unit):
+        """
+        Returns the (front, cross) wind-front sort key for one edge candidate.
+        'front' increases along the downwind direction, so the most upwind
+        candidate (first reached by the sweeping wind front) sorts first.
+        'cross' is the orthogonal projection used as a deterministic tie-breaker.
+        Expected shapes: cand_norm (2,), upwind_unit (2,).
+        """
+        cand = np.asarray(cand_norm, dtype=float)
+        front = -float(np.dot(cand, upwind_unit))
+        cross = float(cand[0] * upwind_unit[1] - cand[1] * upwind_unit[0])
+        return front, cross
+
+    def _sort_edge_candidates_by_wind_front(self, edge_candidates, upwind_unit):
+        """
+        Returns edge candidates ordered by a wind-front sweep: most upwind first,
+        with the orthogonal projection as a stable tie-breaker.
+        Expected shape: edge_candidates (M, 2).
+        """
+        order = sorted(
+            range(edge_candidates.shape[0]),
+            key=lambda i: self._wind_front_sort_key(edge_candidates[i], upwind_unit)
+        )
+        return edge_candidates[order]
+
     def _run_single_edge_tier_attempt(self, edge_candidates, num_turbines, rng):
         """
         Runs one stochastic tier-1 attempt and returns placed/viable edge points.
@@ -732,6 +757,11 @@ class LayoutOptimizer:
 
         edge_candidates = self._generate_edge_candidates(rng, edge_offset_norm=edge_offset_norm)
         self._log(f"      [Init-Wind] Edge tier generated {edge_candidates.shape[0]} candidates.")
+
+        # Order candidates by a wind-front sweep so the most upwind spots are
+        # populated first (deterministic given the dominant wind direction).
+        if edge_candidates.shape[0] > 0:
+            edge_candidates = self._sort_edge_candidates_by_wind_front(edge_candidates, upwind_unit)
 
         # Edge heuristic: place along all edge spots that stay unobstructed in the
         # dominant wind direction, continuing over remaining spots until done.
