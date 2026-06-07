@@ -565,7 +565,38 @@ class LayoutOptimizer:
         y_cand = rng.uniform(0.0, 1.0)
         return np.array([x_cand, y_cand], dtype=float)
 
-    def generate_initial_layout(self, num_turbines, rng, edge_offset_norm=0.01, max_random_attempts=100):
+    def _run_single_edge_tier_attempt(self, edge_candidates, num_turbines, rng):
+        """
+        Runs one stochastic tier-1 attempt and returns placed/viable edge points.
+        """
+        layout_norm = []
+        viable_edge_candidates = []
+        selected_edge_positions = []
+
+        if edge_candidates.shape[0] == 0:
+            return layout_norm, viable_edge_candidates, selected_edge_positions
+
+        remaining_candidates = [edge_candidates[i] for i in rng.permutation(edge_candidates.shape[0])]
+
+        while len(layout_norm) < num_turbines and len(remaining_candidates) > 0:
+            viable_indices = [
+                idx for idx, cand_norm in enumerate(remaining_candidates)
+                if self._is_valid_point(cand_norm, layout_norm)
+            ]
+            if len(viable_indices) > 0:
+                viable_edge_candidates.extend([remaining_candidates[idx].copy() for idx in viable_indices])
+            if len(viable_indices) == 0:
+                break
+
+            pick_pos = int(rng.integers(0, len(viable_indices)))
+            selected_idx = viable_indices[pick_pos]
+            chosen = remaining_candidates.pop(selected_idx)
+            selected_edge_positions.append(chosen.copy())
+            layout_norm.append(chosen)
+
+        return layout_norm, viable_edge_candidates, selected_edge_positions
+
+    def generate_initial_layout(self, num_turbines, rng, edge_offset_norm=0.01, max_random_attempts=1000):
         """
         Two-tier initial solution generator:
         1) Place turbines quasi-uniformly along interior edges.
@@ -582,22 +613,31 @@ class LayoutOptimizer:
         edge_candidates = self._generate_edge_candidates(rng, edge_offset_norm=edge_offset_norm)
         self._log(f"      [Init] Edge tier generated {edge_candidates.shape[0]} candidates.")
         if edge_candidates.shape[0] > 0:
-            remaining_candidates = [edge_candidates[i] for i in rng.permutation(edge_candidates.shape[0])]
-            while len(layout_norm) < num_turbines and len(remaining_candidates) > 0:
-                viable_indices = [
-                    idx for idx, cand_norm in enumerate(remaining_candidates)
-                    if self._is_valid_point(cand_norm, layout_norm)
-                ]
-                if len(viable_indices) > 0:
-                    viable_edge_candidates.extend([remaining_candidates[idx].copy() for idx in viable_indices])
-                if len(viable_indices) == 0:
+            # Tier-1 robustness: if one stochastic edge attempt does not place all turbines,
+            # try additional attempts over the remaining free edge spots (different orders).
+            max_edge_attempts = min(30, max(1, edge_candidates.shape[0]))
+            best_edge_layout = []
+            best_edge_viable = []
+            best_edge_selected = []
+
+            for _ in range(max_edge_attempts):
+                edge_layout, edge_viable, edge_selected = self._run_single_edge_tier_attempt(
+                    edge_candidates=edge_candidates,
+                    num_turbines=num_turbines,
+                    rng=rng
+                )
+
+                if len(edge_layout) > len(best_edge_layout):
+                    best_edge_layout = edge_layout
+                    best_edge_viable = edge_viable
+                    best_edge_selected = edge_selected
+
+                if len(best_edge_layout) >= num_turbines:
                     break
 
-                pick_pos = int(rng.integers(0, len(viable_indices)))
-                selected_idx = viable_indices[pick_pos]
-                chosen = remaining_candidates.pop(selected_idx)
-                selected_edge_positions.append(chosen.copy())
-                layout_norm.append(chosen)
+            layout_norm.extend(best_edge_layout)
+            viable_edge_candidates.extend(best_edge_viable)
+            selected_edge_positions.extend(best_edge_selected)
 
         self._log(
             f"      [Init] Edge tier placed {len(layout_norm)}/{num_turbines} turbines."
