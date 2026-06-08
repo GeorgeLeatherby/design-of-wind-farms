@@ -1292,7 +1292,7 @@ class LayoutOptimizer:
 
 if __name__ == "__main__":
     
-    CONFIG_PATH = "configs/schlegelmuehle.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
+    CONFIG_PATH = "configs/dietendorf.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
 
     with open(CONFIG_PATH, mode='r', encoding='utf-8') as config_file:
         config = json.load(config_file)
