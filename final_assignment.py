@@ -1292,7 +1292,7 @@ class LayoutOptimizer:
 
 if __name__ == "__main__":
     
-    CONFIG_PATH = "configs/dietendorf.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
+    CONFIG_PATH = "configs/kitschenrain.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
 
     with open(CONFIG_PATH, mode='r', encoding='utf-8') as config_file:
         config = json.load(config_file)
@@ -1368,7 +1368,7 @@ if __name__ == "__main__":
             electricity_price_model=economics_config.get('electricity_price_model') if economics_config is not None else None,
             project_start_year=economics_config.get('project_start_year') if economics_config is not None else None,
             hub_height=wind_config.get('hub_height_out') if wind_config is not None else None,
-            wind_speed_hub=wind_mgr.mean_hub_wind_speed,
+            wind_speed_hub=wind_mgr.mean_hub_wind_speed, # URGENT FIX NEEDED!
             theta_shear=wind_config.get('wind_shear') if wind_config is not None else None
         )
         
