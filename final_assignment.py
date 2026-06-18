@@ -277,7 +277,8 @@ class FlorisManager:
 
     def evaluate_layout_pi(self, layout_real):
         """
-        Runs FLORIS with the PI-stage wind rose and returns wake/no-wake AEP.
+        Runs FLORIS with the PI-stage wind rose and returns wake/no-wake AEP
+        together with the annual energy rose matrix.
         Expected shape: layout_real (N, 2)
         """
         self.fmodel.set(
@@ -290,12 +291,26 @@ class FlorisManager:
         )
 
         self.fmodel.run()
-        aep_wake = self.fmodel.get_farm_AEP()
+        aep_wake = float(self.fmodel.get_farm_AEP())
+        power_rose = np.asarray(self.fmodel.get_farm_power(), dtype=float)
+
+        frequency_table = np.asarray(self.wind_rose_pi.freq_table, dtype=float)
+        if power_rose.shape != frequency_table.shape:
+            raise ValueError(
+                f"Power rose shape {power_rose.shape} does not match windrose frequency table shape {frequency_table.shape}."
+            )
+
+        energy_rose_wh = np.nan_to_num(power_rose, nan=0.0) * frequency_table * 8760.0
+        aep_from_energy_rose = float(np.nansum(energy_rose_wh))
+        if not np.isclose(aep_wake, aep_from_energy_rose, rtol=1e-6, atol=max(1.0, abs(aep_wake) * 1e-6)):
+            raise ValueError(
+                f"Energy rose sum {aep_from_energy_rose} does not match FLORIS AEP {aep_wake}."
+            )
 
         self.fmodel.run_no_wake()
-        aep_no_wake = self.fmodel.get_farm_AEP()
+        aep_no_wake = float(self.fmodel.get_farm_AEP())
 
-        return aep_wake, aep_no_wake
+        return aep_wake, aep_no_wake, energy_rose_wh
 
     def plot_final_wake_top_view(
         self,
@@ -390,7 +405,7 @@ class EconomicsManager:
                  turbine_costs, om_costs, rental_costs,
                  nominal_discount_rate, project_lifetime,
                  electricity_price_model, project_start_year,
-                 hub_height, wind_speed_hub, theta_shear):
+                 hub_height, wind_speed_bins, theta_shear):
         
         self.array_voltage = array_voltage
         self.substation_coord = substation_coord
@@ -403,23 +418,24 @@ class EconomicsManager:
         self.electricity_price_model = electricity_price_model
         self.project_start_year = project_start_year
         self.hub_height = hub_height
-        self.wind_speed_hub = wind_speed_hub
+        self.wind_speed_bins = np.asarray(wind_speed_bins, dtype=float)
         self.theta_shear = theta_shear
 
-    def _get_spot_price_for_year(self, year):
+    def _get_spot_price_vector_for_year(self, year):
         annual_average_price = self.electricity_price_model.get('annual_average_price_by_year_usd_per_mwh') if self.electricity_price_model is not None else None
         site_coefficient = self.electricity_price_model.get('site_coefficient') if self.electricity_price_model is not None else None
         site_wind_factor = self.electricity_price_model.get('site_wind_factor') if self.electricity_price_model is not None else None
         reference_hub_height = self.electricity_price_model.get('reference_hub_height_m') if self.electricity_price_model is not None else None
 
-        A = annual_average_price.get(str(year)) if annual_average_price is not None else None
-        wind_term = site_wind_factor * ((reference_hub_height / self.hub_height) ** self.theta_shear) * self.wind_speed_hub
-        return A * (site_coefficient - wind_term)
+        annual_average_price_value = annual_average_price.get(str(year)) if annual_average_price is not None else None
+        wind_term = site_wind_factor * ((reference_hub_height / self.hub_height) ** self.theta_shear) * self.wind_speed_bins
+        return annual_average_price_value * (site_coefficient - wind_term)
 
-    def calculate_metrics(self, layout_real, aep_wh, num_turbines):
+    def calculate_metrics(self, layout_real, aep_wh, num_turbines, energy_rose_wh):
         """
         Executes LandBOSSE and calculates economic metrics.
-        Expected shapes: layout_real (N, 2), aep_wh (float), num_turbines (int)
+        Expected shapes: layout_real (N, 2), aep_wh (float), num_turbines (int),
+        energy_rose_wh (wd_bins, ws_bins)
         """
         landbosse_df = run_landbosse(
             Turbine_coordinates=layout_real,
@@ -433,6 +449,17 @@ class EconomicsManager:
         aep_mwh = aep_wh / 1e6
         aep_kwh = aep_wh / 1000
         total_capacity_mw = (self.rated_power_kw / 1000) * num_turbines
+
+        energy_rose_wh = np.asarray(energy_rose_wh, dtype=float)
+        if energy_rose_wh.ndim != 2:
+            raise ValueError(f"Energy rose must be 2D, received shape {energy_rose_wh.shape}.")
+        if energy_rose_wh.shape[1] != self.wind_speed_bins.shape[0]:
+            raise ValueError(
+                f"Energy rose wind-speed axis {energy_rose_wh.shape[1]} does not match configured wind-speed bins {self.wind_speed_bins.shape[0]}."
+            )
+
+        energy_rose_mwh = energy_rose_wh / 1e6
+        energy_by_wind_speed_mwh = np.sum(energy_rose_mwh, axis=0)
         
         turbine_cost_total = self.turbine_costs * total_capacity_mw
         initial_investment = turbine_cost_total + bos_cost_total
@@ -446,8 +473,8 @@ class EconomicsManager:
 
         for year_offset in range(n):
             year = self.project_start_year + year_offset
-            spot_price = self._get_spot_price_for_year(year)
-            annual_revenue = aep_mwh * spot_price
+            spot_price_by_wind_speed = self._get_spot_price_vector_for_year(year)
+            annual_revenue = float(np.dot(energy_by_wind_speed_mwh, spot_price_by_wind_speed))
             annual_net_cash_flow = annual_revenue - annual_om_cost
             discount_factor = 1.0 / ((1.0 + d) ** (year_offset + 1))
 
@@ -840,8 +867,8 @@ class LayoutOptimizer:
 
         layout_real = self.site.denormalize_coords(layout_norm)
         
-        aep_wake, _ = self.floris.evaluate_layout_pi(layout_real)
-        pi, _ = self.econ.calculate_metrics(layout_real, aep_wake, self.current_num_turbines)
+        aep_wake, _, energy_rose_wh = self.floris.evaluate_layout_pi(layout_real)
+        pi, _ = self.econ.calculate_metrics(layout_real, aep_wake, self.current_num_turbines, energy_rose_wh)
 
         if pi > self.best_eval_pi:
             self.best_eval_pi = pi
@@ -1126,8 +1153,8 @@ class LayoutOptimizer:
         final_real = self.site.denormalize_coords(final_layout_norm)
         init_real = self.site.denormalize_coords(initial_layout_norm)
         
-        aep_wake, aep_nw = self.floris.evaluate_layout_pi(final_real)
-        pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines)
+        aep_wake, aep_nw, energy_rose_wh = self.floris.evaluate_layout_pi(final_real)
+        pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines, energy_rose_wh)
         
         eff = (aep_wake / aep_nw) * 100
         cf = aep_wake / (self.econ.rated_power_kw * num_turbines * 1000 * 24 * 365)
@@ -1368,7 +1395,7 @@ if __name__ == "__main__":
             electricity_price_model=economics_config.get('electricity_price_model') if economics_config is not None else None,
             project_start_year=economics_config.get('project_start_year') if economics_config is not None else None,
             hub_height=wind_config.get('hub_height_out') if wind_config is not None else None,
-            wind_speed_hub=wind_mgr.mean_hub_wind_speed, # URGENT FIX NEEDED!
+            wind_speed_bins=wind_mgr.wind_rose_pi.wind_speeds,
             theta_shear=wind_config.get('wind_shear') if wind_config is not None else None
         )
         
