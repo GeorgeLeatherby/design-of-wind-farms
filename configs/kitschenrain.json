@@ -12,8 +12,8 @@
     "ti": 0.18,
     "discretization": {
       "aep": {
-        "d_wd": 5,
-        "d_ws": 1
+        "d_wd": 10,
+        "d_ws": 2
       },
       "pi": {
         "d_wd": 1,
@@ -26,9 +26,9 @@
     "rated_power_kw": 3370
   },
   "optimization": {
-    "target_min_mw": 45,
+    "target_min_mw": 55,
     "target_max_mw": 60,
-    "num_random_starts": 30,
+    "num_random_starts": 50,
     "num_aep_layouts_for_pi": 3,
     "min_distance_multiplier": 2,
     "opt_method": "COBYLA"

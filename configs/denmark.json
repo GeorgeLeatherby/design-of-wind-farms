@@ -2,18 +2,18 @@
   "site": {
     "site_id": "denmark",
     "site_root": "denmark",
-    "shapefile_path": null
+    "shapefile_path": "denmark\\inputs\\usable_Denmark_area.shp"
   },
   "wind": {
-    "nc_file_path": null,
+    "nc_file_path": "denmark\\inputs\\mesotimeseries-Denmark-center-point.nc",
     "ref_height_in": 10,
-    "hub_height_out": null,
-    "wind_shear": null,
-    "ti": 0.06,
+    "hub_height_out": 120,
+    "wind_shear": 0.17,
+    "ti": 0.12,
     "discretization": {
       "aep": {
-        "d_wd": 5,
-        "d_ws": 1
+        "d_wd": 10,
+        "d_ws": 2
       },
       "pi": {
         "d_wd": 1,
@@ -22,33 +22,35 @@
     }
   },
   "turbine": {
-    "diameter_m": null,
-    "rated_power_kw": null
+    "diameter_m": 130,
+    "rated_power_kw": 3370
   },
   "optimization": {
-    "target_min_mw": null,
-    "target_max_mw": null,
+    "target_min_mw": 50,
+    "target_max_mw": 60,
     "num_random_starts": 30,
     "num_aep_layouts_for_pi": 3,
     "min_distance_multiplier": 2,
     "opt_method": "COBYLA"
   },
   "substation": {
-    "coordinates": null
+    "coordinates": [
+      [503812.0, 6123180.0]
+    ]
   },
   "floris": {
     "wake_model_path": "inputs/gch.yaml",
-    "turbine_type": null,
-    "reference_wind_height": null,
-    "wind_shear": null
+    "turbine_type": "IEA3_4_MW",
+    "reference_wind_height": 120,
+    "wind_shear": 0.17
   },
   "economics": {
-    "array_voltage": null,
-    "turbine_costs": null,
-    "om_costs": null,
-    "rental_costs": null,
-    "nominal_discount_rate": null,
-    "project_lifetime": null,
+    "array_voltage": 30,
+    "turbine_costs": 1125000.0,
+    "om_costs": 0.012,
+    "rental_costs": 15000,
+    "nominal_discount_rate": 0.036,
+    "project_lifetime": 20,
     "project_start_year": 2021,
     "electricity_price_model": {
       "site_coefficient": 1.235,
