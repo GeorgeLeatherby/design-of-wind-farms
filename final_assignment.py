@@ -15,7 +15,7 @@ import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import Point
-from datetime import datetime
+from datetime import datetime, UTC
 from netCDF4 import Dataset, num2date
 from scipy.optimize import minimize
 
@@ -36,6 +36,7 @@ class ResultWriter:
         self.layouts_dir = os.path.join(self.results_dir, 'layouts')
         self.figures_dir = os.path.join(self.results_dir, 'figures')
         self.ranking_csv_path = os.path.join(self.results_dir, f"{self.site_id}_ranking_pi.csv")
+        self.used_initial_layouts_path = os.path.join(self.results_dir, f"{self.site_id}_used_initial_layouts.json")
         self.ranking_columns = [
             'L_yy_mm_dd_hh_mm_N<x>_<seed>',
             'PI',
@@ -46,12 +47,73 @@ class ResultWriter:
             'capacity factor',
             'installed MW'
         ]
+        self.used_initial_layout_signatures = set()
         os.makedirs(self.inputs_dir, exist_ok=True)
         os.makedirs(self.layouts_dir, exist_ok=True)
         os.makedirs(self.figures_dir, exist_ok=True)
+        self._load_used_initial_layouts()
+
+    @staticmethod
+    def _layout_signature(layout_norm, decimals=8):
+        layout_arr = np.asarray(layout_norm, dtype=float)
+        rounded = np.round(layout_arr, decimals=decimals)
+        flattened = rounded.reshape(-1)
+        value_str = '|'.join(f"{value:.{decimals}f}" for value in flattened)
+        return f"N{layout_arr.shape[0]}:{value_str}"
+
+    def _load_used_initial_layouts(self):
+        if not os.path.exists(self.used_initial_layouts_path):
+            return
+
+        with open(self.used_initial_layouts_path, mode='r', encoding='utf-8') as file_obj:
+            payload = json.load(file_obj)
+
+        if isinstance(payload, dict):
+            records = payload.get('records', [])
+        else:
+            records = payload
+
+        for record in records:
+            signature = record.get('signature') if isinstance(record, dict) else None
+            if signature:
+                self.used_initial_layout_signatures.add(signature)
+
+    def is_used_initial_layout(self, layout_norm):
+        signature = self._layout_signature(layout_norm)
+        return signature in self.used_initial_layout_signatures
+
+    def record_used_initial_layout(self, layout_norm, num_turbines, seed, layout_id=None):
+        signature = self._layout_signature(layout_norm)
+        if signature in self.used_initial_layout_signatures:
+            return False
+
+        record = {
+            'signature': signature,
+            'timestamp': datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z'),
+            'layout_id': layout_id,
+            'N turbines': int(num_turbines),
+            'seed': int(seed),
+            'initial_coordinates_norm': np.asarray(layout_norm, dtype=float).tolist()
+        }
+
+        records = []
+        if os.path.exists(self.used_initial_layouts_path):
+            with open(self.used_initial_layouts_path, mode='r', encoding='utf-8') as file_obj:
+                existing_payload = json.load(file_obj)
+            if isinstance(existing_payload, dict):
+                records = existing_payload.get('records', [])
+            else:
+                records = existing_payload
+
+        records.append(record)
+        with open(self.used_initial_layouts_path, mode='w', encoding='utf-8') as file_obj:
+            json.dump({'records': records}, file_obj, indent=2)
+
+        self.used_initial_layout_signatures.add(signature)
+        return True
 
     def build_layout_id(self, num_turbines, seed):
-        stamp = datetime.utcnow().strftime('%y_%m_%d_%H_%M')
+        stamp = datetime.now(UTC).strftime('%y_%m_%d_%H_%M')
         return f"L_{stamp}_N{num_turbines}_{seed}"
 
     def save_layout_json(self, layout_id, data):
@@ -277,7 +339,8 @@ class FlorisManager:
 
     def evaluate_layout_pi(self, layout_real):
         """
-        Runs FLORIS with the PI-stage wind rose and returns wake/no-wake AEP.
+        Runs FLORIS with the PI-stage wind rose and returns wake/no-wake AEP
+        together with the annual energy rose matrix.
         Expected shape: layout_real (N, 2)
         """
         self.fmodel.set(
@@ -290,12 +353,26 @@ class FlorisManager:
         )
 
         self.fmodel.run()
-        aep_wake = self.fmodel.get_farm_AEP()
+        aep_wake = float(self.fmodel.get_farm_AEP())
+        power_rose = np.asarray(self.fmodel.get_farm_power(), dtype=float)
+
+        frequency_table = np.asarray(self.wind_rose_pi.freq_table, dtype=float)
+        if power_rose.shape != frequency_table.shape:
+            raise ValueError(
+                f"Power rose shape {power_rose.shape} does not match windrose frequency table shape {frequency_table.shape}."
+            )
+
+        energy_rose_wh = np.nan_to_num(power_rose, nan=0.0) * frequency_table * 8760.0
+        aep_from_energy_rose = float(np.nansum(energy_rose_wh))
+        if not np.isclose(aep_wake, aep_from_energy_rose, rtol=1e-6, atol=max(1.0, abs(aep_wake) * 1e-6)):
+            raise ValueError(
+                f"Energy rose sum {aep_from_energy_rose} does not match FLORIS AEP {aep_wake}."
+            )
 
         self.fmodel.run_no_wake()
-        aep_no_wake = self.fmodel.get_farm_AEP()
+        aep_no_wake = float(self.fmodel.get_farm_AEP())
 
-        return aep_wake, aep_no_wake
+        return aep_wake, aep_no_wake, energy_rose_wh
 
     def plot_final_wake_top_view(
         self,
@@ -390,7 +467,7 @@ class EconomicsManager:
                  turbine_costs, om_costs, rental_costs,
                  nominal_discount_rate, project_lifetime,
                  electricity_price_model, project_start_year,
-                 hub_height, wind_speed_hub, theta_shear):
+                 hub_height, wind_speed_bins, theta_shear):
         
         self.array_voltage = array_voltage
         self.substation_coord = substation_coord
@@ -403,18 +480,18 @@ class EconomicsManager:
         self.electricity_price_model = electricity_price_model
         self.project_start_year = project_start_year
         self.hub_height = hub_height
-        self.wind_speed_hub = wind_speed_hub
+        self.wind_speed_bins = np.asarray(wind_speed_bins, dtype=float)
         self.theta_shear = theta_shear
 
-    def _get_spot_price_for_year(self, year):
+    def _get_spot_price_vector_for_year(self, year):
         annual_average_price = self.electricity_price_model.get('annual_average_price_by_year_usd_per_mwh') if self.electricity_price_model is not None else None
         site_coefficient = self.electricity_price_model.get('site_coefficient') if self.electricity_price_model is not None else None
         site_wind_factor = self.electricity_price_model.get('site_wind_factor') if self.electricity_price_model is not None else None
         reference_hub_height = self.electricity_price_model.get('reference_hub_height_m') if self.electricity_price_model is not None else None
 
-        A = annual_average_price.get(str(year)) if annual_average_price is not None else None
-        wind_term = site_wind_factor * ((reference_hub_height / self.hub_height) ** self.theta_shear) * self.wind_speed_hub
-        return A * (site_coefficient - wind_term)
+        annual_average_price_value = annual_average_price.get(str(year)) if annual_average_price is not None else None
+        wind_term = site_wind_factor * ((reference_hub_height / self.hub_height) ** self.theta_shear) * self.wind_speed_bins
+        return annual_average_price_value * (site_coefficient - wind_term)
 
     def calculate_irr(self, layout_real, aep_wh, num_turbines, tol=1e-4, max_iter=200):
         """
@@ -479,10 +556,11 @@ class EconomicsManager:
 
         return float(0.5 * (lo + hi))
 
-    def calculate_metrics(self, layout_real, aep_wh, num_turbines):
+    def calculate_metrics(self, layout_real, aep_wh, num_turbines, energy_rose_wh):
         """
         Executes LandBOSSE and calculates economic metrics.
-        Expected shapes: layout_real (N, 2), aep_wh (float), num_turbines (int)
+        Expected shapes: layout_real (N, 2), aep_wh (float), num_turbines (int),
+        energy_rose_wh (wd_bins, ws_bins)
         """
         landbosse_df = run_landbosse(
             Turbine_coordinates=layout_real,
@@ -496,6 +574,17 @@ class EconomicsManager:
         aep_mwh = aep_wh / 1e6
         aep_kwh = aep_wh / 1000
         total_capacity_mw = (self.rated_power_kw / 1000) * num_turbines
+
+        energy_rose_wh = np.asarray(energy_rose_wh, dtype=float)
+        if energy_rose_wh.ndim != 2:
+            raise ValueError(f"Energy rose must be 2D, received shape {energy_rose_wh.shape}.")
+        if energy_rose_wh.shape[1] != self.wind_speed_bins.shape[0]:
+            raise ValueError(
+                f"Energy rose wind-speed axis {energy_rose_wh.shape[1]} does not match configured wind-speed bins {self.wind_speed_bins.shape[0]}."
+            )
+
+        energy_rose_mwh = energy_rose_wh / 1e6
+        energy_by_wind_speed_mwh = np.sum(energy_rose_mwh, axis=0)
         
         turbine_cost_total = self.turbine_costs * total_capacity_mw
         initial_investment = turbine_cost_total + bos_cost_total
@@ -509,8 +598,9 @@ class EconomicsManager:
 
         for year_offset in range(n):
             year = self.project_start_year + year_offset
-            spot_price = self._get_spot_price_for_year(year)
-            annual_revenue = aep_mwh * spot_price
+            spot_price_by_wind_speed = self._get_spot_price_vector_for_year(year)
+            annual_revenue = float(np.dot(energy_by_wind_speed_mwh, spot_price_by_wind_speed))
+            # TODO: CHECK: Is dot product correct here? Shouldnt it be element-wise multiplication followed by sum? Or is spot_price_by_wind_speed already aggregated by wind speed bin?
             annual_net_cash_flow = annual_revenue - annual_om_cost
             discount_factor = 1.0 / ((1.0 + d) ** (year_offset + 1))
 
@@ -534,12 +624,15 @@ class LayoutOptimizer:
     turbine counts and boundary-biased random initializations.
     """
     def __init__(self, site_manager, floris_manager, econ_manager,
-                 min_separation_m, opt_method, verbose=True, objective_log_every=5):
+                 min_separation_m, opt_method, verbose=True, objective_log_every=5,
+                 aep_maxiter=100, pi_maxiter=200):
         self.site = site_manager
         self.floris = floris_manager
         self.econ = econ_manager
         self.min_dist_norm = min_separation_m / self.site.scale
         self.opt_method = opt_method
+        self.aep_maxiter = aep_maxiter
+        self.pi_maxiter = pi_maxiter
         self.current_num_turbines = None # Set dynamically during loops
         self.verbose = verbose
         self.objective_log_every = objective_log_every
@@ -718,7 +811,7 @@ class LayoutOptimizer:
 
         return layout_norm, viable_edge_candidates, selected_edge_positions
 
-    def generate_initial_layout(self, num_turbines, rng, edge_offset_norm=0.01, max_random_attempts=1000):
+    def generate_initial_layout(self, num_turbines, rng, edge_offset_norm=0.02, max_random_attempts=1000):
         """
         Two-tier initial solution generator:
         1) Place turbines quasi-uniformly along interior edges.
@@ -797,8 +890,8 @@ class LayoutOptimizer:
 
         return np.array(layout_norm), init_debug
 
-    def generate_initial_layout_wind_corridor(self, num_turbines, rng, edge_offset_norm=0.01,
-                                              corridor_width_m=100.0, max_random_attempts=1000):
+    def generate_initial_layout_wind_corridor(self, num_turbines, rng, edge_offset_norm=0.02,
+                                              corridor_width_m=260.0, max_random_attempts=1000):
         """
         Wind-corridor initial solution generator (alternative heuristic):
         1) Place turbines on edge spots that are unobstructed in the dominant
@@ -808,7 +901,7 @@ class LayoutOptimizer:
            the existing tier-2 random interior placement.
         """
         self._log(
-            f"      [Init-Wind] Searching wind-corridor initial layout for N={num_turbines} "
+            f"      [Init-Wind-Corridor] Searching wind-corridor initial layout for N={num_turbines} "
             f"(corridor_width_m={corridor_width_m:.0f}, random_try_limit={max_random_attempts})"
         )
         layout_norm = []
@@ -819,7 +912,7 @@ class LayoutOptimizer:
         half_width_norm = (corridor_width_m / 2.0) / self.site.scale
 
         edge_candidates = self._generate_edge_candidates(rng, edge_offset_norm=edge_offset_norm)
-        self._log(f"      [Init-Wind] Edge tier generated {edge_candidates.shape[0]} candidates.")
+        self._log(f"      [Init-Wind-Corridor] Edge tier generated {edge_candidates.shape[0]} candidates.")
 
         # Order candidates by a wind-front sweep so the most upwind spots are
         # populated first (deterministic given the dominant wind direction).
@@ -841,7 +934,7 @@ class LayoutOptimizer:
             layout_norm.append(cand_norm.copy())
 
         self._log(
-            f"      [Init-Wind] Wind-corridor edge tier placed {len(layout_norm)}/{num_turbines} turbines."
+            f"      [Init-Wind-Corridor] Wind-corridor edge tier placed {len(layout_norm)}/{num_turbines} turbines."
         )
 
         random_attempts = 0
@@ -852,7 +945,7 @@ class LayoutOptimizer:
                 layout_norm.append(cand_norm)
 
         self._log(
-            f"      [Init-Wind] Random tier used {random_attempts} tries and reached "
+            f"      [Init-Wind-Corridor] Random tier used {random_attempts} tries and reached "
             f"{len(layout_norm)}/{num_turbines} turbines."
         )
 
@@ -862,7 +955,7 @@ class LayoutOptimizer:
                 f"turbines after the edge heuristic and {max_random_attempts} random tries."
             )
 
-        self._log("      [Init-Wind] Feasible wind-corridor initial layout found.")
+        self._log("      [Init-Wind-Corridor] Feasible wind-corridor initial layout found.")
 
         edge_candidates_arr = np.array(edge_candidates) if edge_candidates.size else np.empty((0, 2), dtype=float)
         viable_edge_arr = np.array(viable_edge_candidates) if len(viable_edge_candidates) > 0 else np.empty((0, 2), dtype=float)
@@ -898,23 +991,53 @@ class LayoutOptimizer:
         self.obj_eval_count += 1
         layout_norm = layout_flat_norm.reshape(self.current_num_turbines, 2)
         self.current_run_history_norm.append(layout_norm.copy())
-        if not self._layout_is_feasible(layout_norm):
-            return 10 # Large penalty for infeasibility
 
+        # 1. Calculate Constraint Violation FIRST
+        constraints = self._build_constraints(self.current_num_turbines)
+        total_violation = 0.0
+        for con in constraints:
+            # con['fun'] returns a value where >= 0 is feasible
+            con_args = con.get('args', ())
+            if not isinstance(con_args, tuple):
+                con_args = (con_args,)
+            val = con['fun'](layout_flat_norm, *con_args)
+            if isinstance(val, np.ndarray):
+                total_violation += np.sum(np.abs(val[val < 0]))
+            else:
+                total_violation += max(0, -val)
+
+        # 2. Distance-Dependent Penalty (Short-circuits to save compute time)
+        if total_violation > 0:
+            # Anchor to the best known PI so there is no massive cliff. 
+            # If no best PI exists yet, default to 0.0 (worse than a typical -2.0 PI)
+            base_val = -self.best_eval_pi if self.best_eval_pi != -np.inf else 0.0
+            
+            # Weight of 10.0: If a turbine is 1% out of bounds (0.01 in normalized space),
+            # the penalty adds 0.1 to the objective. This creates a strong, smooth gradient.
+            penalty_weight = 10.0 
+            penalty_obj = base_val + (penalty_weight * total_violation)
+            
+            if self.objective_log_every > 0 and (self.obj_eval_count % self.objective_log_every == 0) or (self.obj_eval_count == 1):
+                self._log(
+                    f"      [Opt] Eval {self.obj_eval_count}: INFEASIBLE | Obj={penalty_obj:.4f} | Total Violation={total_violation:.4f}"
+                )
+            return 1000 * penalty_obj
+
+        # 3. Feasible Evaluation (Only runs if layout is fully valid)
         layout_real = self.site.denormalize_coords(layout_norm)
         
-        aep_wake, _ = self.floris.evaluate_layout_pi(layout_real)
-        pi, _ = self.econ.calculate_metrics(layout_real, aep_wake, self.current_num_turbines)
+        aep_wake, _, energy_rose_wh = self.floris.evaluate_layout_pi(layout_real)
+        pi, _ = self.econ.calculate_metrics(layout_real, aep_wake, self.current_num_turbines, energy_rose_wh)
 
         if pi > self.best_eval_pi:
             self.best_eval_pi = pi
 
-        if self.objective_log_every > 0 and (self.obj_eval_count % self.objective_log_every == 0):
+        if self.objective_log_every > 0 and (self.obj_eval_count % self.objective_log_every == 0) or (self.obj_eval_count == 1):
             self._log(
-                f"      [Opt] Eval {self.obj_eval_count}: PI={pi:.4f}, best_eval_PI={self.best_eval_pi:.4f}"
+                f"      [Opt] Eval {self.obj_eval_count}: PI={pi:.6f}, best_eval_PI={self.best_eval_pi:.6f} | Total Constraint Violation={total_violation:.4f}"
             )
-        
-        return -pi
+
+        return 1000 * -pi
 
     def _aep_objective_function(self, layout_flat_norm):
         """
@@ -934,8 +1057,8 @@ class LayoutOptimizer:
 
         if self.objective_log_every > 0 and (self.obj_eval_count % self.objective_log_every == 0):
             self._log(
-                f"      [AEP] Eval {self.obj_eval_count}: AEP={aep_wake/1e9:.4f} GWh, "
-                f"best_eval_AEP={self.best_eval_aep/1e9:.4f} GWh"
+                f"      [AEP] Eval {self.obj_eval_count}: AEP={aep_wake/1e9:.6f} GWh, "
+                f"best_eval_AEP={self.best_eval_aep/1e9:.6f} GWh"
             )
 
         return -aep_wake
@@ -977,12 +1100,18 @@ class LayoutOptimizer:
 
         return constraints
 
-    def _build_opt_options(self):
-        opt_options = {'disp': True, 'maxiter': 200}
+    def _build_opt_options(self, stage_label):
+        maxiter = self.aep_maxiter if stage_label == 'AEP' else self.pi_maxiter
+        opt_options = {'disp': True, 'maxiter': maxiter}
         if self.opt_method == 'COBYLA':
             opt_options['rhobeg'] = 0.08
             opt_options['catol'] = 1e-4
             opt_options['tol'] = 5e-4
+        if self.opt_method == 'SLSQP':
+            opt_options['ftol'] = 5.0e-5
+            opt_options['eps'] = 2.0e-3
+            opt_options['maxiter'] = maxiter
+            opt_options['finite_diff_rel_step'] = None  # Let SciPy choose the step size automatically
         return opt_options
 
     def _run_optimization_stage(self, initial_layout_norm, num_turbines, objective_function, stage_label):
@@ -993,21 +1122,31 @@ class LayoutOptimizer:
         self.current_run_history_norm = [initial_layout_norm.copy()]
         x0 = initial_layout_norm.flatten()
         constraints = self._build_constraints(num_turbines)
-        opt_options = self._build_opt_options()
+        opt_options = self._build_opt_options(stage_label)
 
         self._log(
             f"      [{stage_label}] Starting {self.opt_method} for N={num_turbines} with "
             f"{len(constraints)} constraints."
         )
 
+        # --- MODIFICATION START ---
+        # Define the jacobian approximation method. 
+        # '3-point' uses central differences for higher accuracy (polynomial gradient curves)
+        jac_method = '3-point' if self.opt_method == 'SLSQP' else None
+        
         res = minimize(
             fun=objective_function,
             x0=x0,
             method=self.opt_method,
+            jac=jac_method, # Inject the 3-point finite difference here
             constraints=constraints,
             options=opt_options
         )
 
+        if self.opt_method == 'SLSQP':
+            print(f"\nJakobian analysis of SLSQP:")
+            print(f" Min Jac: {res.jac.min():.6f}, Max Jac: {res.jac.max():.6f}, Mean Jac: {res.jac.mean():.6f}, Median Jac: {np.median(res.jac):.6f}")
+            print(f"{res.jac}")
         self.last_run_history_norm = [step.copy() for step in self.current_run_history_norm]
         return res
 
@@ -1057,6 +1196,8 @@ class LayoutOptimizer:
         """
         min_turbines = int(np.ceil(target_mw_min / (self.econ.rated_power_kw / 1000)))
         max_turbines = int(np.floor(target_mw_max / (self.econ.rated_power_kw / 1000)))
+        wind_heuristic_layout_limit = 20
+        wind_heuristic_layout_count = 0
         
         print(f"Top Loop Range: {min_turbines} to {max_turbines} turbines.")
         
@@ -1078,17 +1219,48 @@ class LayoutOptimizer:
                 rng = np.random.default_rng(seed)
                 print(f"   [Start {start_idx+1}/{num_random_starts}] Seed: {seed}")
                 print(f"   [Start {start_idx+1}/{num_random_starts}] Building initial layout...")
-                
-                try:
-                    # Always evaluate the wind-corridor heuristic first; remaining
-                    # starts use the existing quasi-uniform edge generator.
-                    if start_idx == 0:
-                        init_norm, init_debug = self.generate_initial_layout_wind_corridor(num_turbines, rng)
-                    else:
-                        init_norm, init_debug = self.generate_initial_layout(num_turbines, rng)
-                except RuntimeError as e:
-                    print(f"   [Start {start_idx+1}/{num_random_starts}] Skipping: {e}")
-                    continue # Skip if geometrically impossible
+
+                init_norm = None
+                init_debug = None
+                duplicate_attempts = 0
+                while duplicate_attempts < 2:
+                    try:
+                        # Use the wind-corridor heuristic for the first 20 accepted
+                        # layouts, then fall back to the existing edge-based generator.
+                        if wind_heuristic_layout_count < wind_heuristic_layout_limit:
+                            init_norm, init_debug = self.generate_initial_layout_wind_corridor(num_turbines, rng)
+                        else:
+                            init_norm, init_debug = self.generate_initial_layout(num_turbines, rng)
+                    except RuntimeError as e:
+                        print(f"   [Start {start_idx+1}/{num_random_starts}] Skipping: {e}")
+                        init_norm = None
+                        break # Skip if geometrically impossible
+
+                    if result_writer is not None and result_writer.is_used_initial_layout(init_norm):
+                        duplicate_attempts += 1
+                        if duplicate_attempts < 2:
+                            print(
+                                f"   [Start {start_idx+1}/{num_random_starts}] Initial layout already used; regenerating once..."
+                            )
+                            continue
+
+                        print(
+                            f"   [Start {start_idx+1}/{num_random_starts}] Initial layout already used twice; skipping this start."
+                        )
+                        init_norm = None
+                    break
+
+                if init_norm is None:
+                    continue
+
+                if result_writer is not None:
+                    result_writer.record_used_initial_layout(
+                        layout_norm=init_norm,
+                        num_turbines=num_turbines,
+                        seed=seed
+                    )
+
+                wind_heuristic_layout_count += 1
 
                 print(
                     f"   [Start {start_idx+1}/{num_random_starts}] Initial layout accepted. "
@@ -1189,8 +1361,8 @@ class LayoutOptimizer:
         final_real = self.site.denormalize_coords(final_layout_norm)
         init_real = self.site.denormalize_coords(initial_layout_norm)
         
-        aep_wake, aep_nw = self.floris.evaluate_layout_pi(final_real)
-        pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines)
+        aep_wake, aep_nw, energy_rose_wh = self.floris.evaluate_layout_pi(final_real)
+        pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines, energy_rose_wh)
         irr = self.econ.calculate_irr(final_real, aep_wake, num_turbines)
         
         eff = (aep_wake / aep_nw) * 100
@@ -1335,7 +1507,7 @@ class LayoutOptimizer:
             installed_mw = (self.econ.rated_power_kw / 1000.0) * num_turbines
             payload = {
                 'site_id': site_id,
-                'timestamp': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+                'timestamp': datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z'),
                 'layout_id': layout_id,
                 'N turbines': int(num_turbines),
                 'seed': int(seed),
@@ -1379,7 +1551,7 @@ class LayoutOptimizer:
 
 if __name__ == "__main__":
     
-    CONFIG_PATH = "configs/schlegelmuehle.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
+    CONFIG_PATH = "configs/kitschenrain.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
 
     with open(CONFIG_PATH, mode='r', encoding='utf-8') as config_file:
         config = json.load(config_file)
@@ -1455,7 +1627,7 @@ if __name__ == "__main__":
             electricity_price_model=economics_config.get('electricity_price_model') if economics_config is not None else None,
             project_start_year=economics_config.get('project_start_year') if economics_config is not None else None,
             hub_height=wind_config.get('hub_height_out') if wind_config is not None else None,
-            wind_speed_hub=wind_mgr.mean_hub_wind_speed,
+            wind_speed_bins=wind_mgr.wind_rose_pi.wind_speeds,
             theta_shear=wind_config.get('wind_shear') if wind_config is not None else None
         )
         
@@ -1464,7 +1636,9 @@ if __name__ == "__main__":
             floris_manager=floris_mgr,
             econ_manager=econ_mgr,
             min_separation_m=min_distance_m,
-            opt_method=optimization_config.get('opt_method') if optimization_config is not None else None
+            opt_method=optimization_config.get('opt_method') if optimization_config is not None else None,
+            aep_maxiter=optimization_config.get('aep_maxiter', 500) if optimization_config is not None else 100,
+            pi_maxiter=optimization_config.get('pi_maxiter', 200) if optimization_config is not None else 200
         )
         
         # Execute Top-Level Loop
