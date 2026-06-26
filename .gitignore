@@ -9,6 +9,8 @@ __pycache__/
 *.jpg
 *.gif
 
+# Results files
+*/results/*.xlsx
 
 # C extensions
 *.so
