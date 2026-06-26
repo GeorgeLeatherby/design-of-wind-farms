@@ -971,7 +971,7 @@ class LayoutOptimizer:
 
         if self.objective_log_every > 0 and (self.obj_eval_count % self.objective_log_every == 0) or (self.obj_eval_count == 1):
             self._log(
-                f"      [Opt] Eval {self.obj_eval_count}: PI={pi:.4f}, best_eval_PI={self.best_eval_pi:.4f} | Total Constraint Violation=0.0000"
+                f"      [Opt] Eval {self.obj_eval_count}: PI={pi:.6f}, best_eval_PI={self.best_eval_pi:.6f} | Total Constraint Violation={total_violation:.4f}"
             )
 
         return 1000 * -pi
@@ -994,8 +994,8 @@ class LayoutOptimizer:
 
         if self.objective_log_every > 0 and (self.obj_eval_count % self.objective_log_every == 0):
             self._log(
-                f"      [AEP] Eval {self.obj_eval_count}: AEP={aep_wake/1e9:.4f} GWh, "
-                f"best_eval_AEP={self.best_eval_aep/1e9:.4f} GWh"
+                f"      [AEP] Eval {self.obj_eval_count}: AEP={aep_wake/1e9:.6f} GWh, "
+                f"best_eval_AEP={self.best_eval_aep/1e9:.6f} GWh"
             )
 
         return -aep_wake
@@ -1045,10 +1045,10 @@ class LayoutOptimizer:
             opt_options['catol'] = 1e-4
             opt_options['tol'] = 5e-4
         if self.opt_method == 'SLSQP':
-            opt_options['ftol'] = 1e-5
-            opt_options['eps'] = 1e-3
+            opt_options['ftol'] = 5.0e-5
+            opt_options['eps'] = 2.0e-3
             opt_options['maxiter'] = maxiter
-            opt_options['finite_diff_rel_step'] = None
+            opt_options['finite_diff_rel_step'] = None  # Let SciPy choose the step size automatically
         return opt_options
 
     def _run_optimization_stage(self, initial_layout_norm, num_turbines, objective_function, stage_label):

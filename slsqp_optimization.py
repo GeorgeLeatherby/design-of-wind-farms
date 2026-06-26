@@ -25,7 +25,7 @@ from final_assignment import (
 )
 
 
-CONFIG_PATH = "configs/waidmannsheil.json"
+CONFIG_PATH = "configs/kitschenrain.json"
 TOP_LAYOUT_COUNT = 1
 
 
