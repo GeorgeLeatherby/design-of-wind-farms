@@ -312,9 +312,9 @@ class FlorisManager:
         operating point using FLORIS cut-plane visualization.
         """
         if wind_speed is None:
-            wind_speed = self.dominant_wind_speed if self.dominant_wind_speed is not None else 8.0
+            wind_speed = self.dominant_wind_speed if self.dominant_wind_speed is not None else 0.0
         if wind_direction is None:
-            wind_direction = self.dominant_wind_direction if self.dominant_wind_direction is not None else 240.0
+            wind_direction = self.dominant_wind_direction if self.dominant_wind_direction is not None else 0.0
 
         num_turbines = layout_real.shape[0]
 
@@ -415,6 +415,69 @@ class EconomicsManager:
         A = annual_average_price.get(str(year)) if annual_average_price is not None else None
         wind_term = site_wind_factor * ((reference_hub_height / self.hub_height) ** self.theta_shear) * self.wind_speed_hub
         return A * (site_coefficient - wind_term)
+
+    def calculate_irr(self, layout_real, aep_wh, num_turbines, tol=1e-4, max_iter=200):
+        """
+        Approximates annual IRR with a bisection solve on NPV(rate) = 0.
+        Kept separate from calculate_metrics to avoid slowing down optimization.
+        Expected shapes: layout_real (N, 2), aep_wh (float), num_turbines (int)
+        Returns: float IRR (fraction, e.g. 0.087 for 8.7%) or np.nan if no root is bracketed.
+        """
+        landbosse_df = run_landbosse(
+            Turbine_coordinates=layout_real,
+            Substation_coordinate=self.substation_coord,
+            Desired_Voltage=self.array_voltage,
+            WriteExcel=False,
+            Display=False
+        )
+        bos_cost_total = landbosse_df['Cost per project'].sum()
+
+        aep_mwh = aep_wh / 1e6
+        aep_kwh = aep_wh / 1000
+        total_capacity_mw = (self.rated_power_kw / 1000) * num_turbines
+
+        turbine_cost_total = self.turbine_costs * total_capacity_mw
+        initial_investment = turbine_cost_total + bos_cost_total
+        annual_om_cost = (self.om_costs * aep_kwh) + (self.rental_costs * total_capacity_mw)
+
+        cash_flows = [-initial_investment]
+        for year_offset in range(self.project_lifetime):
+            year = self.project_start_year + year_offset
+            spot_price = self._get_spot_price_for_year(year)
+            annual_revenue = aep_mwh * spot_price
+            annual_net_cash_flow = annual_revenue - annual_om_cost
+            cash_flows.append(annual_net_cash_flow)
+
+        def npv_at_rate(rate):
+            return sum(cf / ((1.0 + rate) ** t) for t, cf in enumerate(cash_flows))
+
+        lo = -0.95
+        hi = 1.0
+        f_lo = npv_at_rate(lo)
+        f_hi = npv_at_rate(hi)
+
+        while f_lo * f_hi > 0.0 and hi < 10.0:
+            hi *= 2.0
+            f_hi = npv_at_rate(hi)
+
+        if f_lo * f_hi > 0.0:
+            return np.nan
+
+        for _ in range(max_iter):
+            mid = 0.5 * (lo + hi)
+            f_mid = npv_at_rate(mid)
+
+            if abs(f_mid) < 1e-6 or (hi - lo) < tol:
+                return float(mid)
+
+            if f_lo * f_mid <= 0.0:
+                hi = mid
+                f_hi = f_mid
+            else:
+                lo = mid
+                f_lo = f_mid
+
+        return float(0.5 * (lo + hi))
 
     def calculate_metrics(self, layout_real, aep_wh, num_turbines):
         """
@@ -1128,11 +1191,23 @@ class LayoutOptimizer:
         
         aep_wake, aep_nw = self.floris.evaluate_layout_pi(final_real)
         pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines)
+        irr = self.econ.calculate_irr(final_real, aep_wake, num_turbines)
         
         eff = (aep_wake / aep_nw) * 100
         cf = aep_wake / (self.econ.rated_power_kw * num_turbines * 1000 * 24 * 365)
-        
-        fig, ax1 = plt.subplots(1, 1, figsize=(8, 8))
+
+        # Figure 1 layout: map on the left and KPI text on the right with ~1 cm gap.
+        fig1 = plt.figure(figsize=(12, 8))
+        gap_fraction = (1.0 / 2.54) / 12.0  # 1 cm converted to figure-width fraction.
+        left_panel = [0.08, 0.12, 0.58, 0.80]
+        text_panel = [
+            left_panel[0] + left_panel[2] + gap_fraction,
+            0.12,
+            0.30 - gap_fraction,
+            0.80
+        ]
+        ax1 = fig1.add_axes(left_panel)
+        ax_text = fig1.add_axes(text_panel)
         
         # Handle plotting for both single Polygons and MultiPolygons safely
         if self.site.site_polygon.geom_type == 'MultiPolygon':
@@ -1165,6 +1240,10 @@ class LayoutOptimizer:
         ax1.set_title(f'Optimal Wind Farm (N={num_turbines})')
         ax1.legend()
         ax1.grid(True)
+
+        ax_text.axis('off')
+
+        irr_text = "n/a" if np.isnan(irr) else f"{irr * 100.0:.4f}%"
         
         results_text = (
             f"--- OPTIMUM FOUND ---\n"
@@ -1173,14 +1252,20 @@ class LayoutOptimizer:
             f"Final PI: {pi:.4f}\n"
             f"Final LCoE: {lcoe:.2f} $/MWh\n"
             f"Final AEP: {aep_wake/1e9:.4f} GWh\n"
+            f"IRR: {irr_text}\n"
             f"Farm Efficiency: {eff:.2f}%\n"
             f"Capacity Factor: {cf:.4f}"
         )
-        
-        plt.figtext(0.5, 0.01, results_text, wrap=True, horizontalalignment='center', fontsize=11,
-                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='gray', alpha=0.9))
-                    
-        plt.subplots_adjust(bottom=0.25)
+
+        ax_text.text(
+            0.02,
+            0.98,
+            results_text,
+            va='top',
+            ha='left',
+            fontsize=11,
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='gray', alpha=0.9)
+        )
 
         # Plot 2: FLORIS top-view wake map for the final layout.
         fig2 = self.floris.plot_final_wake_top_view(final_real, site_polygon=self.site.site_polygon)
@@ -1255,6 +1340,7 @@ class LayoutOptimizer:
                 'N turbines': int(num_turbines),
                 'seed': int(seed),
                 'PI': float(pi),
+                'IRR': irr_text,
                 'AEP': float(aep_wake / 1e9),
                 'efficiency': float(eff),
                 'LCoE': float(lcoe),
@@ -1265,10 +1351,11 @@ class LayoutOptimizer:
                 'final_coordinates_m': final_real.tolist()
             }
             result_writer.save_layout_json(layout_id, payload)
-            result_writer.save_figures(layout_id, seed, fig, fig2, fig3)
+            result_writer.save_figures(layout_id, seed, fig1, fig2, fig3)
             ranking_entry = {
                 'L_yy_mm_dd_hh_mm_N<x>_<seed>': layout_id,
                 'PI': f"{pi:.6f}",
+                'IRR': irr_text,
                 'N turbines': str(num_turbines),
                 'AEP': f"{aep_wake / 1e9:.6f}",
                 'efficiency': f"{eff:.6f}",
@@ -1281,7 +1368,7 @@ class LayoutOptimizer:
         if show_plots:
             plt.show()
         else:
-            plt.close(fig)
+            plt.close(fig1)
             plt.close(fig2)
             plt.close(fig3)
 
