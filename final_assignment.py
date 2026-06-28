@@ -129,14 +129,25 @@ class ResultWriter:
         fig_table.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_table_{seed}.png"), dpi=150)
 
     def update_ranking(self, ranking_entry):
+        def normalize_row(row):
+            normalized = {}
+            for key, value in row.items():
+                normalized[str(key).strip()] = value
+            return normalized
+
         rows = []
         if os.path.exists(self.ranking_csv_path):
             with open(self.ranking_csv_path, mode='r', encoding='utf-8', newline='') as file_obj:
                 reader = csv.DictReader(file_obj)
-                rows = list(reader)
+                rows = [normalize_row(row) for row in reader]
 
-        rows.append(ranking_entry)
+        rows.append(normalize_row(ranking_entry))
         rows.sort(key=lambda row: float(row['PI']), reverse=True)
+
+        rows = [
+            {column: row.get(column, '') for column in self.ranking_columns}
+            for row in rows
+        ]
 
         with open(self.ranking_csv_path, mode='w', encoding='utf-8', newline='') as file_obj:
             writer = csv.DictWriter(file_obj, fieldnames=self.ranking_columns)

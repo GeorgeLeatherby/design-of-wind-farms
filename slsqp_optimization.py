@@ -35,6 +35,12 @@ def load_config(config_path):
 
 
 def load_top_saved_pi_layouts(result_writer, top_count=TOP_LAYOUT_COUNT):
+    def normalize_row(row):
+        normalized = {}
+        for key, value in row.items():
+            normalized[str(key).strip()] = value
+        return normalized
+
     if not os.path.exists(result_writer.ranking_csv_path):
         raise FileNotFoundError(
             f"Ranking CSV not found: {result_writer.ranking_csv_path}"
@@ -42,7 +48,7 @@ def load_top_saved_pi_layouts(result_writer, top_count=TOP_LAYOUT_COUNT):
 
     with open(result_writer.ranking_csv_path, mode="r", encoding="utf-8", newline="") as file_obj:
         reader = csv.DictReader(file_obj)
-        rows = list(reader)
+        rows = [normalize_row(row) for row in reader]
 
     rows.sort(key=lambda row: float(row["PI"]), reverse=True)
 
