@@ -40,6 +40,7 @@ class ResultWriter:
         self.ranking_columns = [
             'L_yy_mm_dd_hh_mm_N<x>_<seed>',
             'PI',
+            'IRR',
             'N turbines',
             'AEP',
             'efficiency',
@@ -493,7 +494,7 @@ class EconomicsManager:
         wind_term = site_wind_factor * ((reference_hub_height / self.hub_height) ** self.theta_shear) * self.wind_speed_bins
         return annual_average_price_value * (site_coefficient - wind_term)
 
-    def calculate_irr(self, layout_real, aep_wh, num_turbines, tol=1e-4, max_iter=200):
+    def calculate_irr(self, layout_real, aep_wh, num_turbines, energy_rose_wh=None, tol=1e-4, max_iter=200):
         """
         Approximates annual IRR with a bisection solve on NPV(rate) = 0.
         Kept separate from calculate_metrics to avoid slowing down optimization.
@@ -509,20 +510,34 @@ class EconomicsManager:
         )
         bos_cost_total = landbosse_df['Cost per project'].sum()
 
-        aep_mwh = aep_wh / 1e6
-        aep_kwh = aep_wh / 1000
-        total_capacity_mw = (self.rated_power_kw / 1000) * num_turbines
+        aep_mwh = float(aep_wh / 1e6)
+        aep_kwh = float(aep_wh / 1000)
+        total_capacity_mw = float((self.rated_power_kw / 1000) * num_turbines)
 
-        turbine_cost_total = self.turbine_costs * total_capacity_mw
-        initial_investment = turbine_cost_total + bos_cost_total
-        annual_om_cost = (self.om_costs * aep_kwh) + (self.rental_costs * total_capacity_mw)
+        turbine_cost_total = float(self.turbine_costs * total_capacity_mw)
+        initial_investment = float(turbine_cost_total + bos_cost_total)
+        annual_om_cost = float((self.om_costs * aep_kwh) + (self.rental_costs * total_capacity_mw))
 
         cash_flows = [-initial_investment]
         for year_offset in range(self.project_lifetime):
             year = self.project_start_year + year_offset
-            spot_price = self._get_spot_price_for_year(year)
-            annual_revenue = aep_mwh * spot_price
-            annual_net_cash_flow = annual_revenue - annual_om_cost
+            spot_price_vector = np.asarray(self._get_spot_price_vector_for_year(year), dtype=float)
+
+            if energy_rose_wh is not None:
+                energy_rose_wh = np.asarray(energy_rose_wh, dtype=float)
+                if energy_rose_wh.ndim != 2:
+                    raise ValueError(f"Energy rose must be 2D, received shape {energy_rose_wh.shape}.")
+                if energy_rose_wh.shape[1] != self.wind_speed_bins.shape[0]:
+                    raise ValueError(
+                        f"Energy rose wind-speed axis {energy_rose_wh.shape[1]} does not match configured wind-speed bins {self.wind_speed_bins.shape[0]}."
+                    )
+                energy_rose_mwh = energy_rose_wh / 1e6
+                energy_by_wind_speed_mwh = np.sum(energy_rose_mwh, axis=0)
+                annual_revenue = float(np.dot(energy_by_wind_speed_mwh, spot_price_vector))
+            else:
+                annual_revenue = float(aep_mwh * np.mean(spot_price_vector))
+
+            annual_net_cash_flow = float(annual_revenue - annual_om_cost)
             cash_flows.append(annual_net_cash_flow)
 
         def npv_at_rate(rate):
@@ -1108,8 +1123,8 @@ class LayoutOptimizer:
             opt_options['catol'] = 1e-4
             opt_options['tol'] = 5e-4
         if self.opt_method == 'SLSQP':
-            opt_options['ftol'] = 5.0e-5
-            opt_options['eps'] = 2.0e-3
+            opt_options['ftol'] = 5.0e-4
+            opt_options['eps'] = 3.0e-3
             opt_options['maxiter'] = maxiter
             opt_options['finite_diff_rel_step'] = None  # Let SciPy choose the step size automatically
         return opt_options
@@ -1363,7 +1378,7 @@ class LayoutOptimizer:
         
         aep_wake, aep_nw, energy_rose_wh = self.floris.evaluate_layout_pi(final_real)
         pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines, energy_rose_wh)
-        irr = self.econ.calculate_irr(final_real, aep_wake, num_turbines)
+        irr = self.econ.calculate_irr(final_real, aep_wake, num_turbines, energy_rose_wh=energy_rose_wh)
         
         eff = (aep_wake / aep_nw) * 100
         cf = aep_wake / (self.econ.rated_power_kw * num_turbines * 1000 * 24 * 365)
@@ -1415,7 +1430,7 @@ class LayoutOptimizer:
 
         ax_text.axis('off')
 
-        irr_text = "n/a" if np.isnan(irr) else f"{irr * 100.0:.4f}%"
+        irr_text = "n/a" if np.isnan(irr) else f"{irr * 100.0:.4f}"
         
         results_text = (
             f"--- OPTIMUM FOUND ---\n"
@@ -1528,7 +1543,7 @@ class LayoutOptimizer:
                 'L_yy_mm_dd_hh_mm_N<x>_<seed>': layout_id,
                 'PI': f"{pi:.6f}",
                 'IRR': irr_text,
-                'N turbines': str(num_turbines),
+                'N turbines': int(num_turbines),
                 'AEP': f"{aep_wake / 1e9:.6f}",
                 'efficiency': f"{eff:.6f}",
                 'LCoE': f"{lcoe:.6f}",
