@@ -1134,7 +1134,7 @@ class LayoutOptimizer:
             opt_options['catol'] = 1e-4
             opt_options['tol'] = 5e-4
         if self.opt_method == 'SLSQP':
-            opt_options['ftol'] = 5.0e-4
+            opt_options['ftol'] = 1.0e-5
             opt_options['eps'] = 3.0e-3
             opt_options['maxiter'] = maxiter
             opt_options['finite_diff_rel_step'] = None  # Let SciPy choose the step size automatically
