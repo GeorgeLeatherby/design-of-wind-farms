@@ -9,6 +9,7 @@ Standalone utility for an existing saved layout id:
 
 import json
 import os
+import csv
 
 import numpy as np
 import pandas as pd
@@ -29,12 +30,46 @@ class LayoutFigureResultWriter:
 
     def __init__(self, base_result_writer):
         self.figures_dir = base_result_writer.figures_dir
+        self.ranking_csv_path = base_result_writer.ranking_csv_path
+        self.ranking_columns = list(base_result_writer.ranking_columns)
 
     def save_layout_json(self, layout_id, data):
         _ = (layout_id, data)
 
     def update_ranking(self, ranking_entry):
-        _ = ranking_entry
+        def normalize_row(row):
+            normalized = {}
+            for key, value in row.items():
+                normalized[str(key).strip()] = value
+            return normalized
+
+        rows = []
+        if os.path.exists(self.ranking_csv_path):
+            with open(self.ranking_csv_path, mode="r", encoding="utf-8", newline="") as file_obj:
+                reader = csv.DictReader(file_obj)
+                rows = [normalize_row(row) for row in reader]
+
+        incoming = normalize_row(ranking_entry)
+        key_name = "L_yy_mm_dd_hh_mm_N<x>_<seed>"
+        key_value = incoming.get(key_name)
+
+        replaced = False
+        for idx, row in enumerate(rows):
+            if row.get(key_name) == key_value:
+                rows[idx] = incoming
+                replaced = True
+                break
+
+        if not replaced:
+            rows.append(incoming)
+
+        rows.sort(key=lambda row: float(row["PI"]), reverse=True)
+        rows = [{column: row.get(column, "") for column in self.ranking_columns} for row in rows]
+
+        with open(self.ranking_csv_path, mode="w", encoding="utf-8", newline="") as file_obj:
+            writer = csv.DictWriter(file_obj, fieldnames=self.ranking_columns)
+            writer.writeheader()
+            writer.writerows(rows)
 
     def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_table):
         layout_prefix = layout_id.rsplit("_", 1)[0]
@@ -230,25 +265,18 @@ def regenerate_layout_figures_and_metrics(config_path=CONFIG_PATH, layout_id=LAY
 
     layout_writer = LayoutFigureResultWriter(result_writer)
 
-    # Keep figure regeneration robust if calculate_irr has external dependencies
-    # not available for this post-processing run.
-    original_calculate_irr = optimizer.econ.calculate_irr
-    optimizer.econ.calculate_irr = lambda *args, **kwargs: np.nan
-    try:
-        optimizer.plot_final_solution(
-            final_layout_norm,
-            initial_layout_norm,
-            init_debug=None,
-            num_turbines=num_turbines,
-            total_time=0.0,
-            result_writer=layout_writer,
-            layout_id=layout_id,
-            seed=seed,
-            site_id=site_id,
-            show_plots=False,
-        )
-    finally:
-        optimizer.econ.calculate_irr = original_calculate_irr
+    optimizer.plot_final_solution(
+        final_layout_norm,
+        initial_layout_norm,
+        init_debug=None,
+        num_turbines=num_turbines,
+        total_time=0.0,
+        result_writer=layout_writer,
+        layout_id=layout_id,
+        seed=seed,
+        site_id=site_id,
+        show_plots=False,
+    )
 
     final_layout_real = final_coordinates_m
     aep_wake_wh, aep_no_wake_wh, energy_rose_wh = optimizer.floris.evaluate_layout_pi(final_layout_real)
