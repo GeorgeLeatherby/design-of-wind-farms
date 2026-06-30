@@ -17,8 +17,8 @@ from external.landbosse.landbosse.main_function import run_landbosse
 from slsqp_optimization import build_managers, load_config
 
 
-CONFIG_PATH = "configs/denmark.json"
-LAYOUT_ID = "L_26_06_19_02_25_N17_676677225426536695"
+CONFIG_PATH = "configs/waidmannsheil.json"
+LAYOUT_ID = "L_26_06_18_14_39_N17_11057970192623874460"
 
 
 class LayoutFigureResultWriter:
@@ -233,7 +233,7 @@ def regenerate_layout_figures_and_metrics(config_path=CONFIG_PATH, layout_id=LAY
     # Keep figure regeneration robust if calculate_irr has external dependencies
     # not available for this post-processing run.
     original_calculate_irr = optimizer.econ.calculate_irr
-    optimizer.econ.calculate_irr = lambda layout_real, aep_wh, n_turbines: np.nan
+    optimizer.econ.calculate_irr = lambda *args, **kwargs: np.nan
     try:
         optimizer.plot_final_solution(
             final_layout_norm,
