@@ -48,6 +48,9 @@ WIND_SPEED_HIGH_FULL_STEER = 12.0
 GLOBAL_SCALE_GRID = np.linspace(0.0, 1.0, 21)
 MIN_EFFECTIVE_YAW_DEG = 0.5
 
+WAKE_MAP_X_RESOLUTION = 500
+WAKE_MAP_Y_RESOLUTION = 500
+
 
 def _ensure_wake_steering_dir(result_writer):
     wake_steering_dir = os.path.join(result_writer.results_dir, WAKE_STEERING_DIRNAME)
@@ -549,8 +552,8 @@ def _plot_wake_map_with_yaw_table(
 
     horizontal_plane = viz_fmodel.calculate_horizontal_plane(
         height=floris_settings["reference_wind_height"],
-        x_resolution=250,
-        y_resolution=250,
+        x_resolution=WAKE_MAP_X_RESOLUTION,
+        y_resolution=WAKE_MAP_Y_RESOLUTION,
         findex_for_viz=0,
     )
 
@@ -874,6 +877,10 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         if abs(common_baseline_power_w) > 1e-9
         else 0.0
     )
+    common_frequency = float(freq_table[i_common, j_common])
+    common_baseline_energy_mwh = common_baseline_power_w * common_frequency * 8760.0 / 1e6
+    common_opt_energy_mwh = common_opt_power_w * common_frequency * 8760.0 / 1e6
+    common_gain_energy_mwh = common_opt_energy_mwh - common_baseline_energy_mwh
 
     best_baseline_power_w = float(power_baseline[i_best, j_best])
     best_opt_power_w = float(power_opt[i_best, j_best])
@@ -883,20 +890,30 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         if abs(best_baseline_power_w) > 1e-9
         else 0.0
     )
+    best_frequency = float(freq_table[i_best, j_best])
+    best_baseline_energy_mwh = best_baseline_power_w * best_frequency * 8760.0 / 1e6
+    best_opt_energy_mwh = best_opt_power_w * best_frequency * 8760.0 / 1e6
+    best_gain_energy_mwh = best_opt_energy_mwh - best_baseline_energy_mwh
 
     common_case_note = (
         "Most common wind condition (max frequency bin). "
-        f"Frequency={freq_table[i_common, j_common]:.6f} [-], "
+        f"Frequency={common_frequency:.6f} [-], "
         f"P_baseline={common_baseline_power_w:.3f} W, "
         f"P_optimized={common_opt_power_w:.3f} W, "
-        f"delta P={common_gain_w:+.3f} W ({common_gain_pct:+.3f}%)"
+        f"delta P={common_gain_w:+.3f} W ({common_gain_pct:+.3f}%), "
+        f"E_baseline={common_baseline_energy_mwh:.6f} MWh/year, "
+        f"E_optimized={common_opt_energy_mwh:.6f} MWh/year, "
+        f"delta E={common_gain_energy_mwh:+.6f} MWh/year"
     )
     best_case_note = (
         "Most optimized condition (max annualized energy gain contribution bin). "
-        f"Delta energy={weighted_gain_wh[i_best, j_best] / 1e6:.6f} MWh/year, "
+        f"Frequency={best_frequency:.6f} [-], "
         f"P_baseline={best_baseline_power_w:.3f} W, "
         f"P_optimized={best_opt_power_w:.3f} W, "
-        f"delta P={best_gain_w:+.3f} W ({best_gain_pct:+.3f}%)"
+        f"delta P={best_gain_w:+.3f} W ({best_gain_pct:+.3f}%), "
+        f"E_baseline={best_baseline_energy_mwh:.6f} MWh/year, "
+        f"E_optimized={best_opt_energy_mwh:.6f} MWh/year, "
+        f"delta E={best_gain_energy_mwh:+.6f} MWh/year"
     )
 
     common_case_png = os.path.join(wake_steering_dir, "wake_map_most_common_condition.png")
