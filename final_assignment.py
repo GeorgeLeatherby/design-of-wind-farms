@@ -505,7 +505,7 @@ class EconomicsManager:
         wind_term = site_wind_factor * ((reference_hub_height / self.hub_height) ** self.theta_shear) * self.wind_speed_bins
         return annual_average_price_value * (site_coefficient - wind_term)
 
-    def calculate_irr(self, layout_real, aep_wh, num_turbines, energy_rose_wh=None, tol=1e-4, max_iter=200):
+    def calculate_irr(self, layout_real, aep_wh, num_turbines, energy_rose_wh, tol=1e-4, max_iter=200):
         """
         Approximates annual IRR with a bisection solve on NPV(rate) = 0.
         Kept separate from calculate_metrics to avoid slowing down optimization.
@@ -1389,7 +1389,7 @@ class LayoutOptimizer:
         
         aep_wake, aep_nw, energy_rose_wh = self.floris.evaluate_layout_pi(final_real)
         pi, lcoe = self.econ.calculate_metrics(final_real, aep_wake, num_turbines, energy_rose_wh)
-        irr = self.econ.calculate_irr(final_real, aep_wake, num_turbines, energy_rose_wh=energy_rose_wh)
+        irr = self.econ.calculate_irr(final_real, aep_wake, num_turbines, energy_rose_wh)
         
         eff = (aep_wake / aep_nw) * 100
         cf = aep_wake / (self.econ.rated_power_kw * num_turbines * 1000 * 24 * 365)
