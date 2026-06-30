@@ -32,16 +32,16 @@ WAKE_STEERING_DIRNAME = "wake_steering"
 
 MINIMUM_YAW_ANGLE_DEG = -20.0
 MAXIMUM_YAW_ANGLE_DEG = 20.0
-NY_PASSES = [13, 8, 6, 4]
+NY_PASSES = [15, 10, 8, 6]
 EXCLUDE_DOWNSTREAM_TURBINES = True
 OPTIMIZATION_RESTARTS = 3
-TOP_FREQUENCY_BINS_TO_OPTIMIZE = 578
+TOP_FREQUENCY_BINS_TO_OPTIMIZE = 722
 
 COARSE_OPTIMIZATION_D_WD_DEG = 5.0
 COARSE_OPTIMIZATION_D_WS_MPS = 2.0
 
 WIND_SPEED_LOW_NO_STEER = 4.0
-WIND_SPEED_HIGH_NO_STEER = 14.0
+WIND_SPEED_HIGH_NO_STEER = 18.0
 WIND_SPEED_LOW_FULL_STEER = 6.0
 WIND_SPEED_HIGH_FULL_STEER = 12.0
 
@@ -899,7 +899,7 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         "Most common wind condition (max frequency bin). "
         f"Frequency={common_frequency:.6f} [-], "
         f"P_baseline={common_baseline_power_w:.3f} W, "
-        f"P_optimized={common_opt_power_w:.3f} W, "
+        f"P_optimized={common_opt_power_w:.3f} W,\n"
         f"delta P={common_gain_w:+.3f} W ({common_gain_pct:+.3f}%), "
         f"E_baseline={common_baseline_energy_mwh:.6f} MWh/year, "
         f"E_optimized={common_opt_energy_mwh:.6f} MWh/year, "
@@ -909,7 +909,7 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         "Most optimized condition (max annualized energy gain contribution bin). "
         f"Frequency={best_frequency:.6f} [-], "
         f"P_baseline={best_baseline_power_w:.3f} W, "
-        f"P_optimized={best_opt_power_w:.3f} W, "
+        f"P_optimized={best_opt_power_w:.3f} W,\n"
         f"delta P={best_gain_w:+.3f} W ({best_gain_pct:+.3f}%), "
         f"E_baseline={best_baseline_energy_mwh:.6f} MWh/year, "
         f"E_optimized={best_opt_energy_mwh:.6f} MWh/year, "

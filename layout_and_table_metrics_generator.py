@@ -17,8 +17,8 @@ from external.landbosse.landbosse.main_function import run_landbosse
 from slsqp_optimization import build_managers, load_config
 
 
-CONFIG_PATH = "configs/denmark.json"
-LAYOUT_ID = "L_26_06_19_02_25_N17_676677225426536695"
+CONFIG_PATH = "configs/waidmannsheil.json"
+LAYOUT_ID = "L_26_06_18_14_39_N17_11057970192623874460"
 
 
 class LayoutFigureResultWriter:
