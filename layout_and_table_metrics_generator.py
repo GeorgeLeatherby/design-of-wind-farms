@@ -233,7 +233,7 @@ def regenerate_layout_figures_and_metrics(config_path=CONFIG_PATH, layout_id=LAY
     # Keep figure regeneration robust if calculate_irr has external dependencies
     # not available for this post-processing run.
     original_calculate_irr = optimizer.econ.calculate_irr
-    optimizer.econ.calculate_irr = lambda layout_real, aep_wh, n_turbines: np.nan
+    optimizer.econ.calculate_irr = lambda *args, **kwargs: np.nan
     try:
         optimizer.plot_final_solution(
             final_layout_norm,
