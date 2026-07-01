@@ -43,11 +43,12 @@ COARSE_OPTIMIZATION_D_WS_MPS = 2.0
 
 WIND_SPEED_LOW_NO_STEER = 4.0
 WIND_SPEED_HIGH_NO_STEER = 18.0
-WIND_SPEED_LOW_FULL_STEER = 6.0
-WIND_SPEED_HIGH_FULL_STEER = 12.0
+WIND_SPEED_LOW_FULL_STEER = 5.0
+WIND_SPEED_HIGH_FULL_STEER = 14.0
 
 GLOBAL_SCALE_GRID = np.linspace(0.0, 1.0, 42)
-MIN_EFFECTIVE_YAW_DEG = 0.25
+MIN_EFFECTIVE_YAW_DEG = 1.0
+APPLY_YAW_SPARSIFICATION = False
 
 WAKE_MAP_X_RESOLUTION = 800
 WAKE_MAP_Y_RESOLUTION = 800
@@ -81,6 +82,38 @@ def _nearest_direction_key(direction_keys, target_wd_deg):
     return float(keys[int(np.argmin(deltas))])
 
 
+def _angular_distance_deg(a_deg, b_deg):
+    return float(np.abs(((float(a_deg) - float(b_deg) + 180.0) % 360.0) - 180.0))
+
+
+def _interpolate_direction_yaw(direction_to_yaw, target_wd_deg):
+    if not direction_to_yaw:
+        raise ValueError("direction_to_yaw must contain at least one direction.")
+
+    key_pairs = sorted((float(np.mod(k, 360.0)), float(k)) for k in direction_to_yaw.keys())
+    sorted_mod = np.asarray([k_mod for k_mod, _ in key_pairs], dtype=float)
+    sorted_orig = [k_orig for _, k_orig in key_pairs]
+    target_mod = float(np.mod(target_wd_deg, 360.0))
+
+    if len(sorted_mod) == 1:
+        return np.asarray(direction_to_yaw[sorted_orig[0]], dtype=float)
+
+    right_idx = int(np.searchsorted(sorted_mod, target_mod, side="left") % len(sorted_mod))
+    left_idx = int((right_idx - 1) % len(sorted_mod))
+
+    wd_left = float(sorted_mod[left_idx])
+    wd_right = float(sorted_mod[right_idx])
+    yaw_left = np.asarray(direction_to_yaw[sorted_orig[left_idx]], dtype=float)
+    yaw_right = np.asarray(direction_to_yaw[sorted_orig[right_idx]], dtype=float)
+
+    span = float((wd_right - wd_left) % 360.0)
+    if span <= 1e-12:
+        return yaw_left
+
+    frac = float(((target_mod - wd_left) % 360.0) / span)
+    return (1.0 - frac) * yaw_left + frac * yaw_right
+
+
 def _apply_speed_ramp(yaw_full, wind_speed):
     if (wind_speed < WIND_SPEED_LOW_NO_STEER) or (wind_speed > WIND_SPEED_HIGH_NO_STEER):
         return np.zeros_like(yaw_full)
@@ -98,8 +131,7 @@ def _apply_speed_ramp(yaw_full, wind_speed):
 
 
 def _yaw_for_condition(direction_to_yaw, wind_direction, wind_speed, n_turbines):
-    nearest_wd = _nearest_direction_key(list(direction_to_yaw.keys()), float(wind_direction))
-    yaw_full = np.asarray(direction_to_yaw[nearest_wd], dtype=float)
+    yaw_full = _interpolate_direction_yaw(direction_to_yaw, float(wind_direction))
     if yaw_full.shape[0] != n_turbines:
         raise ValueError(
             f"Yaw vector length {yaw_full.shape[0]} does not match n_turbines={n_turbines}."
@@ -169,12 +201,90 @@ def _select_top_frequency_bins(coarse_wd, coarse_ws, coarse_freq, top_count):
                     "i_ws": i_ws,
                     "wd": float(coarse_wd[i_wd]),
                     "ws": ws_val,
+                    "ws_idx": i_ws,
                     "freq": freq,
                 }
             )
 
-    rows.sort(key=lambda row: row["freq"], reverse=True)
-    return rows[: int(top_count)]
+    if not rows:
+        return []
+
+    grouped = {}
+    total_mass = 0.0
+    for row in rows:
+        ws_idx = int(row["ws_idx"])
+        grouped.setdefault(ws_idx, []).append(row)
+        total_mass += float(row["freq"])
+
+    for ws_idx in grouped:
+        grouped[ws_idx].sort(key=lambda r: r["freq"], reverse=True)
+
+    target_total = int(top_count)
+    ws_indices = sorted(grouped.keys())
+    allocation = {ws_idx: 0 for ws_idx in ws_indices}
+
+    if target_total <= 0:
+        return []
+
+    for ws_idx in ws_indices:
+        speed_mass = float(sum(r["freq"] for r in grouped[ws_idx]))
+        proportional = int(np.floor(target_total * speed_mass / total_mass)) if total_mass > 0.0 else 0
+        if grouped[ws_idx]:
+            allocation[ws_idx] = max(1, proportional)
+        allocation[ws_idx] = min(allocation[ws_idx], len(grouped[ws_idx]))
+
+    allocated = int(sum(allocation.values()))
+    while allocated > target_total:
+        removable = [ws_idx for ws_idx in ws_indices if allocation[ws_idx] > 1]
+        if not removable:
+            break
+        ws_to_remove = max(removable, key=lambda idx: allocation[idx])
+        allocation[ws_to_remove] -= 1
+        allocated -= 1
+
+    while allocated < target_total:
+        candidates = [ws_idx for ws_idx in ws_indices if allocation[ws_idx] < len(grouped[ws_idx])]
+        if not candidates:
+            break
+        ws_to_add = max(candidates, key=lambda idx: grouped[idx][allocation[idx]]["freq"])
+        allocation[ws_to_add] += 1
+        allocated += 1
+
+    selected = []
+    diversity_weight = 0.35
+    for ws_idx in ws_indices:
+        rows_for_speed = grouped[ws_idx]
+        take_k = int(allocation[ws_idx])
+        if take_k <= 0:
+            continue
+        if take_k >= len(rows_for_speed):
+            selected.extend(rows_for_speed)
+            continue
+
+        chosen = []
+        remaining = rows_for_speed.copy()
+
+        chosen.append(remaining.pop(0))
+        while len(chosen) < take_k and remaining:
+            freq_max = max(float(r["freq"]) for r in remaining)
+
+            best_idx = 0
+            best_score = -np.inf
+            for idx, row in enumerate(remaining):
+                freq_term = float(row["freq"]) / freq_max if freq_max > 0.0 else 0.0
+                min_sep = min(_angular_distance_deg(row["wd"], c["wd"]) for c in chosen)
+                sep_term = float(min_sep / 180.0)
+                score = freq_term + diversity_weight * sep_term
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+
+            chosen.append(remaining.pop(best_idx))
+
+        selected.extend(chosen)
+
+    selected.sort(key=lambda row: row["freq"], reverse=True)
+    return selected[:target_total]
 
 
 def _group_top_bins_by_speed(top_bins):
@@ -289,8 +399,127 @@ def _select_nearest_speed_key(speed_keys, wind_speed):
     return float(keys[int(np.argmin(np.abs(keys - float(wind_speed))))])
 
 
+def _interpolate_speed_scale(scale_by_speed, wind_speed):
+    if not scale_by_speed:
+        return 1.0
+
+    ws_keys = np.asarray(sorted(float(ws) for ws in scale_by_speed.keys()), dtype=float)
+    ws_val = float(wind_speed)
+
+    if ws_keys.size == 1:
+        return float(scale_by_speed[float(ws_keys[0])])
+    if ws_val <= ws_keys[0]:
+        return float(scale_by_speed[float(ws_keys[0])])
+    if ws_val >= ws_keys[-1]:
+        return float(scale_by_speed[float(ws_keys[-1])])
+
+    right_idx = int(np.searchsorted(ws_keys, ws_val, side="left"))
+    left_idx = right_idx - 1
+    ws_left = float(ws_keys[left_idx])
+    ws_right = float(ws_keys[right_idx])
+    alpha_left = float(scale_by_speed[ws_left])
+    alpha_right = float(scale_by_speed[ws_right])
+
+    if abs(ws_right - ws_left) <= 1e-12:
+        return alpha_left
+    frac = (ws_val - ws_left) / (ws_right - ws_left)
+    return float((1.0 - frac) * alpha_left + frac * alpha_right)
+
+
+def _interpolate_multispeed_yaw_base(yaw_map_by_speed, wind_direction, wind_speed, n_turbines):
+    if not yaw_map_by_speed:
+        raise ValueError("yaw_map_by_speed must contain at least one optimized speed.")
+
+    ws_keys = np.asarray(sorted(float(ws) for ws in yaw_map_by_speed.keys()), dtype=float)
+    ws_val = float(wind_speed)
+
+    if ws_keys.size == 1:
+        yaw = _interpolate_direction_yaw(yaw_map_by_speed[float(ws_keys[0])], float(wind_direction))
+    elif ws_val <= ws_keys[0]:
+        yaw = _interpolate_direction_yaw(yaw_map_by_speed[float(ws_keys[0])], float(wind_direction))
+    elif ws_val >= ws_keys[-1]:
+        yaw = _interpolate_direction_yaw(yaw_map_by_speed[float(ws_keys[-1])], float(wind_direction))
+    else:
+        right_idx = int(np.searchsorted(ws_keys, ws_val, side="left"))
+        left_idx = right_idx - 1
+        ws_left = float(ws_keys[left_idx])
+        ws_right = float(ws_keys[right_idx])
+
+        yaw_left = _interpolate_direction_yaw(yaw_map_by_speed[ws_left], float(wind_direction))
+        yaw_right = _interpolate_direction_yaw(yaw_map_by_speed[ws_right], float(wind_direction))
+
+        if abs(ws_right - ws_left) <= 1e-12:
+            yaw = yaw_left
+        else:
+            frac = (ws_val - ws_left) / (ws_right - ws_left)
+            yaw = (1.0 - frac) * yaw_left + frac * yaw_right
+
+    yaw = np.asarray(yaw, dtype=float)
+    if yaw.shape[0] != n_turbines:
+        raise ValueError(f"Yaw vector length {yaw.shape[0]} does not match n_turbines={n_turbines}.")
+    return yaw
+
+
+def _compute_per_speed_scales(
+    layout_real,
+    floris_settings,
+    yaw_map_by_speed,
+    grouped_top_bins_by_speed,
+    turbulence_intensity,
+    n_turbines,
+):
+    scale_by_speed = {}
+    for ws in sorted(yaw_map_by_speed.keys()):
+        direction_to_yaw = yaw_map_by_speed[ws]
+        rows = grouped_top_bins_by_speed.get(ws, [])
+        if not rows:
+            scale_by_speed[float(ws)] = 1.0
+            continue
+
+        wind_directions = np.asarray([row["wd"] for row in rows], dtype=float)
+        frequency_by_direction = np.asarray([row["freq"] for row in rows], dtype=float)
+
+        fmodel_local = FlorisModel(floris_settings["wake_model_path"])
+        fmodel_local.set(
+            layout_x=layout_real[:, 0],
+            layout_y=layout_real[:, 1],
+            turbine_type=[floris_settings["turbine_type"]] * n_turbines,
+            reference_wind_height=floris_settings["reference_wind_height"],
+            wind_shear=floris_settings["wind_shear"],
+        )
+        ts_for_speed = TimeSeries(
+            wind_directions=wind_directions,
+            wind_speeds=float(ws),
+            turbulence_intensities=float(turbulence_intensity),
+        )
+        fmodel_local.set(wind_data=ts_for_speed)
+
+        yaw_matrix_base = np.vstack(
+            [
+                _interpolate_direction_yaw(direction_to_yaw, float(wd))
+                for wd in wind_directions
+            ]
+        )
+
+        best_alpha = 1.0
+        best_score = -np.inf
+        for alpha in GLOBAL_SCALE_GRID:
+            fmodel_local.set(yaw_angles=yaw_matrix_base * float(alpha))
+            fmodel_local.run()
+            power_by_direction = np.asarray(fmodel_local.get_farm_power(), dtype=float).reshape(-1)
+            score = float(np.dot(power_by_direction, frequency_by_direction))
+            if score > best_score:
+                best_score = score
+                best_alpha = float(alpha)
+
+        scale_by_speed[float(ws)] = float(best_alpha)
+
+    return scale_by_speed
+
+
 def _build_full_rose_yaw_angles_multispeed(
     yaw_map_by_speed,
+    scale_by_speed,
     wind_directions,
     wind_speeds,
     n_turbines,
@@ -302,18 +531,20 @@ def _build_full_rose_yaw_angles_multispeed(
             yaw_angles[i, :] = 0.0
             continue
 
-        ws_key = _select_nearest_speed_key(yaw_map_by_speed.keys(), ws)
-        direction_to_yaw = yaw_map_by_speed[ws_key]
-        yaw_angles[i, :] = _yaw_for_condition(
-            direction_to_yaw=direction_to_yaw,
+        yaw_base = _interpolate_multispeed_yaw_base(
+            yaw_map_by_speed=yaw_map_by_speed,
             wind_direction=float(wind_directions[i]),
             wind_speed=ws,
             n_turbines=n_turbines,
         )
+        alpha_ws = _interpolate_speed_scale(scale_by_speed=scale_by_speed, wind_speed=ws)
+        yaw_angles[i, :] = _apply_speed_ramp(yaw_base * float(alpha_ws), ws)
     return yaw_angles
 
 
 def _sparsify_yaw(yaw_angles, min_effective_deg=MIN_EFFECTIVE_YAW_DEG):
+    if not APPLY_YAW_SPARSIFICATION:
+        return np.asarray(yaw_angles, dtype=float).copy()
     yaw_out = np.asarray(yaw_angles, dtype=float).copy()
     yaw_out[np.abs(yaw_out) < float(min_effective_deg)] = 0.0
     return yaw_out
@@ -340,6 +571,16 @@ def _find_best_global_yaw_scale(fmodel, wind_rose, yaw_angles_candidate, baselin
             best_schedule = schedule
 
     return best_alpha, best_aep, best_schedule
+
+
+def _evaluate_full_schedule_aep(fmodel, wind_rose, yaw_angles_candidate, baseline_aep):
+    aep_eval = _run_aep_with_yaw(fmodel, wind_rose, yaw_angles_candidate)
+    if aep_eval <= float(baseline_aep):
+        raise RuntimeError(
+            "No wake-steering schedule improved full-rose AEP. "
+            "Per requirement, the script stops instead of accepting power-reducing yaw settings."
+        )
+    return float(aep_eval)
 
 
 def _compute_yaw_stats(yaw_angles, yaw_limit_deg=MAXIMUM_YAW_ANGLE_DEG):
@@ -728,6 +969,15 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         turbulence_intensity=turbulence_intensity,
         n_turbines=n_turbines,
     )
+
+    scale_by_speed = _compute_per_speed_scales(
+        layout_real=layout_real,
+        floris_settings=floris_settings,
+        yaw_map_by_speed=yaw_map_by_speed,
+        grouped_top_bins_by_speed=grouped_top_bins_by_speed,
+        turbulence_intensity=turbulence_intensity,
+        n_turbines=n_turbines,
+    )
     opt_runtime_s = time.time() - start_time
     print(f"[Yaw] Multi-speed optimization finished in {opt_runtime_s:.2f}s")
 
@@ -737,23 +987,20 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
     wind_speeds_full = np.asarray(fmodel.wind_speeds, dtype=float)
     yaw_angles_raw = _build_full_rose_yaw_angles_multispeed(
         yaw_map_by_speed=yaw_map_by_speed,
+        scale_by_speed=scale_by_speed,
         wind_directions=wind_directions_full,
         wind_speeds=wind_speeds_full,
         n_turbines=n_turbines,
     )
     yaw_angles_sparse = _sparsify_yaw(yaw_angles_raw, min_effective_deg=MIN_EFFECTIVE_YAW_DEG)
-    best_alpha, aep_opt, yaw_angles_full = _find_best_global_yaw_scale(
+    yaw_angles_full = yaw_angles_sparse
+    aep_opt = _evaluate_full_schedule_aep(
         fmodel=fmodel,
         wind_rose=wind_rose,
-        yaw_angles_candidate=yaw_angles_sparse,
+        yaw_angles_candidate=yaw_angles_full,
         baseline_aep=aep_baseline,
     )
-
-    if aep_opt <= aep_baseline:
-        raise RuntimeError(
-            "No wake-steering schedule improved full-rose AEP. "
-            "Per requirement, the script stops instead of accepting power-reducing yaw settings."
-        )
+    best_alpha = 1.0
 
     fmodel.set(wind_data=wind_rose)
     fmodel.set(yaw_angles=yaw_angles_full)
@@ -834,6 +1081,7 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         "installed_mw": float((optimizer.econ.rated_power_kw / 1000.0) * n_turbines),
         "yaw_runtime_s": float(opt_runtime_s),
         "global_yaw_scale": float(best_alpha),
+        "per_speed_scales": {f"{float(ws):.3f}": float(scale_by_speed[ws]) for ws in sorted(scale_by_speed.keys())},
         "yaw_non_zero_fraction_before": float(yaw_stats_raw["non_zero_fraction"]),
         "yaw_non_zero_fraction_after": float(yaw_stats_final["non_zero_fraction"]),
         "yaw_at_limit_fraction_before": float(yaw_stats_raw["at_limit_fraction"]),
@@ -851,14 +1099,18 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         wind_speed=common_case["ws"],
         n_turbines=n_turbines,
     )
-    common_case_yaw = _sparsify_yaw(common_case_yaw, min_effective_deg=MIN_EFFECTIVE_YAW_DEG) * best_alpha
+    common_case_yaw = _sparsify_yaw(common_case_yaw, min_effective_deg=MIN_EFFECTIVE_YAW_DEG) * float(
+        _interpolate_speed_scale(scale_by_speed, common_case["ws"])
+    )
     best_case_yaw = _yaw_for_condition(
         direction_to_yaw=yaw_map_by_speed[ws_best_key],
         wind_direction=best_case["wd"],
         wind_speed=best_case["ws"],
         n_turbines=n_turbines,
     )
-    best_case_yaw = _sparsify_yaw(best_case_yaw, min_effective_deg=MIN_EFFECTIVE_YAW_DEG) * best_alpha
+    best_case_yaw = _sparsify_yaw(best_case_yaw, min_effective_deg=MIN_EFFECTIVE_YAW_DEG) * float(
+        _interpolate_speed_scale(scale_by_speed, best_case["ws"])
+    )
 
     i_common, j_common = common_case["idx"]
     i_best, j_best = best_case["idx"]
@@ -1029,6 +1281,7 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
             "raw_schedule": yaw_stats_raw,
             "final_schedule": yaw_stats_final,
             "global_scale_applied": float(best_alpha),
+            "per_speed_scale_applied": {f"{float(ws):.3f}": float(scale_by_speed[ws]) for ws in sorted(scale_by_speed.keys())},
             "active_speed_bins_optimized_m_per_s": [float(ws) for ws in sorted(yaw_map_by_speed.keys())],
             "coarse_optimization_settings": {
                 "d_wd_deg": float(COARSE_OPTIMIZATION_D_WD_DEG),
