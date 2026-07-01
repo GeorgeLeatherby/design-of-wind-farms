@@ -27,7 +27,7 @@ from floris.optimization.yaw_optimization.yaw_optimizer_sr import YawOptimizatio
 from slsqp_optimization import build_managers, load_config, load_top_saved_pi_layouts
 
 
-CONFIG_PATH = "configs/denmark.json"
+CONFIG_PATH = "configs/kitschenrain.json"
 TOP_LAYOUT_COUNT = 1
 WAKE_STEERING_DIRNAME = "wake_steering"
 

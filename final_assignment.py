@@ -443,13 +443,15 @@ class FlorisManager:
         seed_fontsize = 11
 
         fig, ax = plt.subplots(1, 1, figsize=(fig_width_in, fig_height_in))
+        title_text = (
+            f"Wake Top View at Hub Height ({self.reference_wind_height:.0f} m)\n"
+            f"WD={wind_direction:.1f} deg, WS={wind_speed:.1f} m/s"
+        )
+        if seed is not None:
+            title_text = f"{title_text}\nSeed: {seed}"
         visualize_cut_plane(
             horizontal_plane,
             ax=ax,
-            title=(
-                f"Wake Top View at Hub Height ({self.reference_wind_height:.0f} m), "
-                f"WD={wind_direction:.1f} deg, WS={wind_speed:.1f} m/s"
-            ),
             color_bar=True
         )
         ax.scatter(
@@ -480,20 +482,11 @@ class FlorisManager:
         ax.tick_params(axis='x', labelrotation=45)
         for tick in ax.get_xticklabels():
             tick.set_horizontalalignment('right')
-        ax.title.set_fontsize(title_fontsize)
-        if seed is not None:
-            ax.text(
-                0.5,
-                1.01,
-                f'Seed: {seed}',
-                transform=ax.transAxes,
-                ha='center',
-                va='bottom',
-                fontsize=seed_fontsize
-            )
+        ax.set_title(title_text, fontsize=title_fontsize, pad=5)
         ax.legend(loc='upper right', fontsize=8)
         ax.grid(True, alpha=0.25)
-        fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
+        fig.subplots_adjust(top=0.90)
+        fig.tight_layout()
         return fig
 
 
@@ -1425,12 +1418,9 @@ class LayoutOptimizer:
         cf = aep_wake / (self.econ.rated_power_kw * num_turbines * 1000 * 24 * 365)
 
         # A4 landscape target (29.7 cm) with 2 cm outer margins and 1 cm gap between 2 figures:
-        # each figure width = (29.7 - 4 - 1) / 2 = 12.35 cm.
-        # Increased by 2 cm in both directions to enlarge graph area.
-        fig_width_in = 14.35 / 2.54
-        fig_height_in = 12.5 / 2.54
+        fig_width_in = 15.35 / 2.54
+        fig_height_in = 14.5 / 2.54
         title_fontsize = 13
-        seed_fontsize = 11
         axis_fontsize = 12
         legend_fontsize = 10
         tick_fontsize = 10
@@ -1466,24 +1456,18 @@ class LayoutOptimizer:
         ax1.set_aspect('equal')
         ax1.set_xlabel('East [m]', fontsize=axis_fontsize)
         ax1.set_ylabel('North [m]', fontsize=axis_fontsize)
-        ax1.set_title(f'Optimal Wind Farm (N={num_turbines})', fontsize=title_fontsize)
+        title_text = f'Optimal Wind Farm (N={num_turbines})'
+        if seed is not None:
+            title_text = f'{title_text}\nSeed: {seed}'
+        ax1.set_title(title_text, fontsize=title_fontsize, pad=5)
         ax1.tick_params(axis='both', labelsize=tick_fontsize)
         ax1.tick_params(axis='x', labelrotation=45)
         for tick in ax1.get_xticklabels():
             tick.set_horizontalalignment('right')
-        if seed is not None:
-            ax1.text(
-                0.5,
-                1.01,
-                f'Seed: {seed}',
-                transform=ax1.transAxes,
-                ha='center',
-                va='bottom',
-                fontsize=seed_fontsize
-            )
         ax1.legend(fontsize=legend_fontsize)
         ax1.grid(True)
-        fig1.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
+        fig1.subplots_adjust(top=0.90)
+        fig1.tight_layout()
 
         # Plot 2: FLORIS top-view wake map for the final layout.
         fig2 = self.floris.plot_final_wake_top_view(
@@ -1523,27 +1507,22 @@ class LayoutOptimizer:
         ax_map.set_aspect('equal')
         ax_map.set_xlabel('East [m]', fontsize=axis_fontsize)
         ax_map.set_ylabel('North [m]', fontsize=axis_fontsize)
+        title_text = 'Viable Candidates and Best Layout'
+        if seed is not None:
+            title_text = f'{title_text}\nSeed: {seed}'
         ax_map.set_title(
-            'Tier-1 Viable Boundary Candidates and Best Layout Coordinates',
-            fontsize=title_fontsize
+            title_text,
+            fontsize=title_fontsize,
+            pad=5
         )
         ax_map.tick_params(axis='both', labelsize=tick_fontsize)
         ax_map.tick_params(axis='x', labelrotation=45)
         for tick in ax_map.get_xticklabels():
             tick.set_horizontalalignment('right')
-        if seed is not None:
-            ax_map.text(
-                0.5,
-                1.01,
-                f'Seed: {seed}',
-                transform=ax_map.transAxes,
-                ha='center',
-                va='bottom',
-                fontsize=seed_fontsize
-            )
         ax_map.grid(True, alpha=0.35)
         ax_map.legend(loc='best', fontsize=legend_fontsize)
-        fig3.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
+        fig3.subplots_adjust(top=0.90)
+        fig3.tight_layout()
 
         if result_writer is not None and layout_id is not None and seed is not None and site_id is not None:
             installed_mw = (self.econ.rated_power_kw / 1000.0) * num_turbines

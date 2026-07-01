@@ -19,7 +19,7 @@ from slsqp_optimization import build_managers, load_config
 
 
 CONFIG_PATH = "configs/kitschenrain.json"
-LAYOUT_ID = "L_26_07_01_10_11_N17_17063367025727692224"
+LAYOUT_ID = "L_26_06_29_07_58_N17_16177344846063077645"
 
 
 class LayoutFigureResultWriter:
