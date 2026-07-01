@@ -19,6 +19,7 @@ import traceback
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import TwoSlopeNorm
 
 from floris import FlorisModel, TimeSeries
 from floris.flow_visualization import visualize_cut_plane
@@ -48,8 +49,8 @@ WIND_SPEED_HIGH_FULL_STEER = 12.0
 GLOBAL_SCALE_GRID = np.linspace(0.0, 1.0, 42)
 MIN_EFFECTIVE_YAW_DEG = 0.25
 
-WAKE_MAP_X_RESOLUTION = 500
-WAKE_MAP_Y_RESOLUTION = 500
+WAKE_MAP_X_RESOLUTION = 800
+WAKE_MAP_Y_RESOLUTION = 800
 
 
 def _ensure_wake_steering_dir(result_writer):
@@ -491,16 +492,29 @@ def _plot_power_gain_heatmap(output_path, wind_rose, power_baseline, power_opt):
     )
     relative_gain_pct = (ratio - 1.0) * 100.0
 
+    abs_gain_limit = float(np.max(np.abs(absolute_gain)))
+    rel_gain_limit = float(np.max(np.abs(relative_gain_pct)))
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), constrained_layout=True)
 
-    im1 = ax1.imshow(absolute_gain, aspect="auto", cmap="RdYlGn")
+    im1 = ax1.imshow(
+        absolute_gain,
+        aspect="auto",
+        cmap="RdYlGn",
+        norm=TwoSlopeNorm(vmin=-abs_gain_limit, vcenter=0.0, vmax=abs_gain_limit),
+    )
     cbar1 = fig.colorbar(im1, ax=ax1)
     cbar1.set_label("Power gain [W]")
     ax1.set_title("Absolute power gain by wind bin")
     ax1.set_xlabel("Wind speed [m/s]")
     ax1.set_ylabel("Wind direction [deg]")
 
-    im2 = ax2.imshow(relative_gain_pct, aspect="auto", cmap="RdYlGn")
+    im2 = ax2.imshow(
+        relative_gain_pct,
+        aspect="auto",
+        cmap="RdYlGn",
+        norm=TwoSlopeNorm(vmin=-rel_gain_limit, vcenter=0.0, vmax=rel_gain_limit),
+    )
     cbar2 = fig.colorbar(im2, ax=ax2)
     cbar2.set_label("Relative gain [%]")
     ax2.set_title("Relative power gain by wind bin")
@@ -522,7 +536,7 @@ def _plot_power_gain_heatmap(output_path, wind_rose, power_baseline, power_opt):
     plt.close(fig)
 
 
-def _plot_wake_map_with_yaw_table(
+def _plot_wake_map(
     output_path,
     floris_settings,
     layout_real,
@@ -532,8 +546,6 @@ def _plot_wake_map_with_yaw_table(
     wind_speed,
     yaw_angles_deg,
     case_title,
-    case_note,
-    gains_text,
 ):
     n_turbines = layout_real.shape[0]
     viz_fmodel = FlorisModel(floris_settings["wake_model_path"])
@@ -557,25 +569,13 @@ def _plot_wake_map_with_yaw_table(
         findex_for_viz=0,
     )
 
-    fig = plt.figure(figsize=(16, 9))
-    grid = fig.add_gridspec(
-        2,
-        2,
-        height_ratios=[4.7, 1.9],
-        width_ratios=[4.2, 1.8],
-        hspace=0.10,
-        wspace=0.14,
-    )
-
-    ax_map = fig.add_subplot(grid[0, 0])
-    ax_table = fig.add_subplot(grid[0, 1])
-    ax_note = fig.add_subplot(grid[1, :])
+    fig, ax_map = plt.subplots(1, 1, figsize=(11, 8))
 
     visualize_cut_plane(
         horizontal_plane,
         ax=ax_map,
         title=f"{case_title} | WD={wind_direction:.1f} deg, WS={wind_speed:.1f} m/s",
-        color_bar=False,
+        color_bar=True,
     )
 
     ax_map.scatter(
@@ -608,35 +608,31 @@ def _plot_wake_map_with_yaw_table(
     ax_map.grid(True, alpha=0.25)
     ax_map.legend(loc="upper right")
 
-    ax_table.axis("off")
-    table_rows = [[idx + 1, f"{yaw_angles_deg[idx]:.2f}"] for idx in range(n_turbines)]
-    yaw_table = ax_table.table(
-        cellText=table_rows,
-        colLabels=["Turbine #", "Yaw [deg]"],
-        loc="center",
-        cellLoc="center",
-        colLoc="center",
-    )
-    yaw_table.auto_set_font_size(False)
-    yaw_table.set_fontsize(8)
-    yaw_table.scale(1.0, 1.15)
-    ax_table.set_title("Yaw offsets relative to wind direction", fontsize=10)
-
-    ax_note.axis("off")
-    note_text = f"{case_note}\n\n{gains_text}"
-    ax_note.text(
-        0.01,
-        0.98,
-        note_text,
-        ha="left",
-        va="top",
-        fontsize=9,
-        bbox={"boxstyle": "round,pad=0.5", "fc": "white", "ec": "gray", "alpha": 0.95},
-    )
-
-    fig.subplots_adjust(left=0.04, right=0.98, top=0.94, bottom=0.06, wspace=0.14, hspace=0.10)
+    fig.subplots_adjust(left=0.06, right=0.92, top=0.92, bottom=0.08)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
+
+
+def _save_case_yaw_csv(output_path, yaw_angles_deg):
+    yaw_vector = np.asarray(yaw_angles_deg, dtype=float)
+    with open(output_path, mode="w", encoding="utf-8", newline="") as file_obj:
+        writer = csv.writer(file_obj)
+        writer.writerow(["turbine_index", "yaw_deg"])
+        for turbine_idx, yaw_deg in enumerate(yaw_vector, start=1):
+            writer.writerow([turbine_idx, f"{float(yaw_deg):.6f}"])
+    return output_path
+
+
+def _save_case_metrics_csv(output_path, metrics_dict):
+    with open(output_path, mode="w", encoding="utf-8", newline="") as file_obj:
+        writer = csv.writer(file_obj)
+        writer.writerow(["metric", "value"])
+        for metric_name, metric_value in metrics_dict.items():
+            if isinstance(metric_value, float):
+                writer.writerow([metric_name, f"{metric_value:.10f}"])
+            else:
+                writer.writerow([metric_name, metric_value])
+    return output_path
 
 
 def _save_yaw_results_csv(output_dir, yaw_map_by_speed):
@@ -846,8 +842,6 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         "mean_abs_yaw_after_deg": float(yaw_stats_final["mean_abs_yaw_deg"]),
         "optimization_wind_speed": float(dominant_ws),
     }
-    gains_text = _build_gain_text(gains)
-
     ws_common_key = _select_nearest_speed_key(yaw_map_by_speed.keys(), common_case["ws"])
     ws_best_key = _select_nearest_speed_key(yaw_map_by_speed.keys(), best_case["ws"])
 
@@ -895,32 +889,15 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
     best_opt_energy_mwh = best_opt_power_w * best_frequency * 8760.0 / 1e6
     best_gain_energy_mwh = best_opt_energy_mwh - best_baseline_energy_mwh
 
-    common_case_note = (
-        "Most common wind condition (max frequency bin). "
-        f"Frequency={common_frequency:.6f} [-], "
-        f"P_baseline={common_baseline_power_w:.3f} W, "
-        f"P_optimized={common_opt_power_w:.3f} W,\n"
-        f"delta P={common_gain_w:+.3f} W ({common_gain_pct:+.3f}%), "
-        f"E_baseline={common_baseline_energy_mwh:.6f} MWh/year, "
-        f"E_optimized={common_opt_energy_mwh:.6f} MWh/year, "
-        f"delta E={common_gain_energy_mwh:+.6f} MWh/year"
-    )
-    best_case_note = (
-        "Most optimized condition (max annualized energy gain contribution bin). "
-        f"Frequency={best_frequency:.6f} [-], "
-        f"P_baseline={best_baseline_power_w:.3f} W, "
-        f"P_optimized={best_opt_power_w:.3f} W,\n"
-        f"delta P={best_gain_w:+.3f} W ({best_gain_pct:+.3f}%), "
-        f"E_baseline={best_baseline_energy_mwh:.6f} MWh/year, "
-        f"E_optimized={best_opt_energy_mwh:.6f} MWh/year, "
-        f"delta E={best_gain_energy_mwh:+.6f} MWh/year"
-    )
-
     common_case_png = os.path.join(wake_steering_dir, "wake_map_most_common_condition.png")
     best_case_png = os.path.join(wake_steering_dir, "wake_map_most_optimized_condition.png")
     heatmap_png = os.path.join(wake_steering_dir, "power_gain_heatmap_full_rose.png")
+    common_yaw_csv = os.path.join(wake_steering_dir, "yaw_per_turbine_common.csv")
+    best_yaw_csv = os.path.join(wake_steering_dir, "yaw_per_turbine_most_optimized.csv")
+    common_metrics_csv = os.path.join(wake_steering_dir, "metrics_common.csv")
+    best_metrics_csv = os.path.join(wake_steering_dir, "metrics_most_optimized.csv")
 
-    _plot_wake_map_with_yaw_table(
+    _plot_wake_map(
         output_path=common_case_png,
         floris_settings=floris_settings,
         layout_real=layout_real,
@@ -930,10 +907,8 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         wind_speed=common_case["ws"],
         yaw_angles_deg=common_case_yaw,
         case_title="Wake steering - most common condition",
-        case_note=common_case_note,
-        gains_text=gains_text,
     )
-    _plot_wake_map_with_yaw_table(
+    _plot_wake_map(
         output_path=best_case_png,
         floris_settings=floris_settings,
         layout_real=layout_real,
@@ -943,8 +918,6 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         wind_speed=best_case["ws"],
         yaw_angles_deg=best_case_yaw,
         case_title="Wake steering - most optimized condition",
-        case_note=best_case_note,
-        gains_text=gains_text,
     )
 
     _plot_power_gain_heatmap(
@@ -955,6 +928,78 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
     )
 
     yaw_csv_path = _save_yaw_results_csv(wake_steering_dir, yaw_map_by_speed)
+    common_yaw_csv = _save_case_yaw_csv(common_yaw_csv, common_case_yaw)
+    best_yaw_csv = _save_case_yaw_csv(best_yaw_csv, best_case_yaw)
+
+    common_metrics = {
+        "case_label": "most_common",
+        "source_layout_id": layout_id,
+        "source_layout_num_turbines": int(n_turbines),
+        "wind_direction_deg": float(common_case["wd"]),
+        "wind_speed_m_per_s": float(common_case["ws"]),
+        "frequency": float(common_frequency),
+        "reference_optimized_speed_bin_m_per_s": float(ws_common_key),
+        "power_baseline_w": float(common_baseline_power_w),
+        "power_optimized_w": float(common_opt_power_w),
+        "power_gain_w": float(common_gain_w),
+        "power_gain_pct": float(common_gain_pct),
+        "annualized_energy_baseline_mwh": float(common_baseline_energy_mwh),
+        "annualized_energy_optimized_mwh": float(common_opt_energy_mwh),
+        "annualized_energy_gain_mwh": float(common_gain_energy_mwh),
+        "pi_baseline": float(pi_baseline),
+        "pi_opt": float(pi_opt),
+        "irr_baseline_pct": float(irr_baseline * 100.0),
+        "irr_opt_pct": float(irr_opt * 100.0),
+        "aep_baseline_gwh": float(aep_baseline / 1e9),
+        "aep_opt_gwh": float(aep_opt / 1e9),
+        "efficiency_baseline_pct": float(efficiency_baseline_pct),
+        "efficiency_opt_pct": float(efficiency_opt_pct),
+        "lcoe_baseline_usd_per_mwh": float(lcoe_baseline),
+        "lcoe_opt_usd_per_mwh": float(lcoe_opt),
+        "capacity_factor_baseline": float(capacity_factor_baseline),
+        "capacity_factor_opt": float(capacity_factor_opt),
+        "wake_loss_baseline_pct": float(wake_loss_baseline_pct),
+        "wake_loss_opt_pct": float(wake_loss_opt_pct),
+        "installed_mw": float((optimizer.econ.rated_power_kw / 1000.0) * n_turbines),
+        "yaw_optimization_runtime_s": float(opt_runtime_s),
+        "global_yaw_scale": float(best_alpha),
+    }
+    best_metrics = {
+        "case_label": "most_optimized",
+        "source_layout_id": layout_id,
+        "source_layout_num_turbines": int(n_turbines),
+        "wind_direction_deg": float(best_case["wd"]),
+        "wind_speed_m_per_s": float(best_case["ws"]),
+        "frequency": float(best_frequency),
+        "reference_optimized_speed_bin_m_per_s": float(ws_best_key),
+        "power_baseline_w": float(best_baseline_power_w),
+        "power_optimized_w": float(best_opt_power_w),
+        "power_gain_w": float(best_gain_w),
+        "power_gain_pct": float(best_gain_pct),
+        "annualized_energy_baseline_mwh": float(best_baseline_energy_mwh),
+        "annualized_energy_optimized_mwh": float(best_opt_energy_mwh),
+        "annualized_energy_gain_mwh": float(best_gain_energy_mwh),
+        "annualized_gain_mwh": float(weighted_gain_wh[i_best, j_best] / 1e6),
+        "pi_baseline": float(pi_baseline),
+        "pi_opt": float(pi_opt),
+        "irr_baseline_pct": float(irr_baseline * 100.0),
+        "irr_opt_pct": float(irr_opt * 100.0),
+        "aep_baseline_gwh": float(aep_baseline / 1e9),
+        "aep_opt_gwh": float(aep_opt / 1e9),
+        "efficiency_baseline_pct": float(efficiency_baseline_pct),
+        "efficiency_opt_pct": float(efficiency_opt_pct),
+        "lcoe_baseline_usd_per_mwh": float(lcoe_baseline),
+        "lcoe_opt_usd_per_mwh": float(lcoe_opt),
+        "capacity_factor_baseline": float(capacity_factor_baseline),
+        "capacity_factor_opt": float(capacity_factor_opt),
+        "wake_loss_baseline_pct": float(wake_loss_baseline_pct),
+        "wake_loss_opt_pct": float(wake_loss_opt_pct),
+        "installed_mw": float((optimizer.econ.rated_power_kw / 1000.0) * n_turbines),
+        "yaw_optimization_runtime_s": float(opt_runtime_s),
+        "global_yaw_scale": float(best_alpha),
+    }
+    common_metrics_csv = _save_case_metrics_csv(common_metrics_csv, common_metrics)
+    best_metrics_csv = _save_case_metrics_csv(best_metrics_csv, best_metrics)
 
     summary = {
         "config_path": config_path,
@@ -998,6 +1043,10 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
             "wake_map_most_optimized_condition": best_case_png,
             "power_gain_heatmap_full_rose": heatmap_png,
             "yaw_schedule_csv": yaw_csv_path,
+            "yaw_per_turbine_common_csv": common_yaw_csv,
+            "yaw_per_turbine_most_optimized_csv": best_yaw_csv,
+            "metrics_common_csv": common_metrics_csv,
+            "metrics_most_optimized_csv": best_metrics_csv,
         },
     }
 
