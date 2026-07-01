@@ -36,10 +36,10 @@ MAXIMUM_YAW_ANGLE_DEG = 20.0
 NY_PASSES = [15, 10, 8, 6]
 EXCLUDE_DOWNSTREAM_TURBINES = True
 OPTIMIZATION_RESTARTS = 3
-TOP_FREQUENCY_BINS_TO_OPTIMIZE = 722
+TOP_FREQUENCY_BINS_TO_OPTIMIZE = 1500
 
-COARSE_OPTIMIZATION_D_WD_DEG = 5.0
-COARSE_OPTIMIZATION_D_WS_MPS = 2.0
+COARSE_OPTIMIZATION_D_WD_DEG = 3.0
+COARSE_OPTIMIZATION_D_WS_MPS = 1.0
 
 WIND_SPEED_LOW_NO_STEER = 4.0
 WIND_SPEED_HIGH_NO_STEER = 18.0
@@ -50,8 +50,9 @@ GLOBAL_SCALE_GRID = np.linspace(0.0, 1.0, 42)
 MIN_EFFECTIVE_YAW_DEG = 1.0
 APPLY_YAW_SPARSIFICATION = False
 
-WAKE_MAP_X_RESOLUTION = 800
-WAKE_MAP_Y_RESOLUTION = 800
+WAKE_MAP_X_RESOLUTION = 250
+WAKE_MAP_Y_RESOLUTION = 250
+FALLBACK_WAKE_MAP_TURBULENCE_INTENSITY = 0.185
 
 
 def _ensure_wake_steering_dir(result_writer):
@@ -183,6 +184,32 @@ def _build_coarse_wind_rose_from_fine(wind_rose, d_wd_deg, d_ws_mps):
             coarse_freq[coarse_i, coarse_j] += float(fine_freq[i_wd, i_ws])
 
     return coarse_wd, coarse_ws, coarse_freq
+
+
+def _build_full_rose_bins_by_speed(wind_rose):
+    freq_table = np.asarray(wind_rose.freq_table, dtype=float)
+    wind_directions = np.asarray(wind_rose.wind_directions, dtype=float)
+    wind_speeds = np.asarray(wind_rose.wind_speeds, dtype=float)
+
+    grouped = {}
+    for i_wd, wd in enumerate(wind_directions):
+        for i_ws, ws in enumerate(wind_speeds):
+            freq = float(freq_table[i_wd, i_ws])
+            if freq <= 0.0:
+                continue
+            grouped.setdefault(float(ws), []).append(
+                {
+                    "i_wd": int(i_wd),
+                    "i_ws": int(i_ws),
+                    "wd": float(wd),
+                    "ws": float(ws),
+                    "freq": freq,
+                }
+            )
+
+    for ws in grouped:
+        grouped[ws].sort(key=lambda row: row["freq"], reverse=True)
+    return grouped
 
 
 def _select_top_frequency_bins(coarse_wd, coarse_ws, coarse_freq, top_count):
@@ -334,6 +361,7 @@ def _optimize_yaw_for_one_speed(
             maximum_yaw_angle=MAXIMUM_YAW_ANGLE_DEG,
             Ny_passes=NY_PASSES,
             exclude_downstream_turbines=exclude_downstream,
+            verify_convergence=True
         )
         df_speed = yaw_opt.optimize()
 
@@ -458,6 +486,39 @@ def _interpolate_multispeed_yaw_base(yaw_map_by_speed, wind_direction, wind_spee
     if yaw.shape[0] != n_turbines:
         raise ValueError(f"Yaw vector length {yaw.shape[0]} does not match n_turbines={n_turbines}.")
     return yaw
+
+
+def _apply_power_guard_to_schedule(fmodel, wind_rose, yaw_angles_candidate, turbulence_intensity, n_turbines):
+    yaw_angles = np.asarray(yaw_angles_candidate, dtype=float).copy()
+    wind_directions = np.asarray(wind_rose.wind_directions, dtype=float)
+    wind_speeds = np.asarray(wind_rose.wind_speeds, dtype=float)
+
+    for row_idx in range(yaw_angles.shape[0]):
+        wind_direction = float(wind_directions[row_idx])
+        wind_speed = float(wind_speeds[row_idx])
+
+        fmodel.set(
+            wind_speeds=[wind_speed],
+            wind_directions=[wind_direction],
+            turbulence_intensities=[float(turbulence_intensity)],
+            yaw_angles=np.zeros((1, n_turbines), dtype=float),
+        )
+        fmodel.run()
+        baseline_power = float(np.asarray(fmodel.get_farm_power(), dtype=float).reshape(-1)[0])
+
+        fmodel.set(
+            wind_speeds=[wind_speed],
+            wind_directions=[wind_direction],
+            turbulence_intensities=[float(turbulence_intensity)],
+            yaw_angles=np.asarray([yaw_angles[row_idx, :]], dtype=float),
+        )
+        fmodel.run()
+        candidate_power = float(np.asarray(fmodel.get_farm_power(), dtype=float).reshape(-1)[0])
+
+        if candidate_power <= baseline_power:
+            yaw_angles[row_idx, :] = 0.0
+
+    return yaw_angles
 
 
 def _compute_per_speed_scales(
@@ -723,8 +784,9 @@ def _plot_power_gain_heatmap(output_path, wind_rose, power_baseline, power_opt):
     wind_speeds = np.asarray(wind_rose.wind_speeds, dtype=float)
     baseline = np.asarray(power_baseline, dtype=float)
     optimized = np.asarray(power_opt, dtype=float)
+    freq_table = np.asarray(wind_rose.freq_table, dtype=float)
 
-    absolute_gain = optimized - baseline
+    annualized_gain_mwh = (optimized - baseline) * freq_table * 8760.0 / 1e6
     ratio = np.divide(
         optimized,
         baseline,
@@ -733,32 +795,58 @@ def _plot_power_gain_heatmap(output_path, wind_rose, power_baseline, power_opt):
     )
     relative_gain_pct = (ratio - 1.0) * 100.0
 
-    abs_gain_limit = float(np.max(np.abs(absolute_gain)))
-    rel_gain_limit = float(np.max(np.abs(relative_gain_pct)))
+    valid_freq = freq_table[freq_table > 0.0]
+    if valid_freq.size > 0:
+        freq_threshold = float(np.percentile(valid_freq, 10.0))
+    else:
+        freq_threshold = 0.0
+    freq_mask = freq_table >= freq_threshold
+
+    annualized_gain_plot = np.ma.masked_where(~freq_mask, annualized_gain_mwh)
+    relative_gain_plot = np.ma.masked_where(~freq_mask, relative_gain_pct)
+
+    annualized_gain_flat = annualized_gain_plot.compressed()
+    relative_gain_flat = relative_gain_plot.compressed()
+    if annualized_gain_flat.size == 0:
+        annualized_gain_flat = np.array([0.0])
+    if relative_gain_flat.size == 0:
+        relative_gain_flat = np.array([0.0])
+
+    lower_abs = float(np.percentile(annualized_gain_flat, 5.0))
+    upper_abs = float(np.percentile(annualized_gain_flat, 95.0))
+    lower_rel = float(np.percentile(relative_gain_flat, 5.0))
+    upper_rel = float(np.percentile(relative_gain_flat, 95.0))
+
+    abs_limit = max(abs(lower_abs), abs(upper_abs), 1e-9)
+    rel_limit = max(abs(lower_rel), abs(upper_rel), 1e-9)
+    abs_lower = -abs_limit if lower_abs < 0.0 else 0.0
+    abs_upper = abs_limit if upper_abs > 0.0 else 0.0
+    rel_lower = -rel_limit if lower_rel < 0.0 else 0.0
+    rel_upper = rel_limit if upper_rel > 0.0 else 0.0
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), constrained_layout=True)
 
     im1 = ax1.imshow(
-        absolute_gain,
+        annualized_gain_plot,
         aspect="auto",
         cmap="RdYlGn",
-        norm=TwoSlopeNorm(vmin=-abs_gain_limit, vcenter=0.0, vmax=abs_gain_limit),
+        norm=TwoSlopeNorm(vmin=abs_lower, vcenter=0.0, vmax=abs_upper),
     )
     cbar1 = fig.colorbar(im1, ax=ax1)
-    cbar1.set_label("Power gain [W]")
-    ax1.set_title("Absolute power gain by wind bin")
+    cbar1.set_label("Annualized energy gain [MWh/yr]")
+    ax1.set_title("Annualized energy gain by wind bin")
     ax1.set_xlabel("Wind speed [m/s]")
     ax1.set_ylabel("Wind direction [deg]")
 
     im2 = ax2.imshow(
-        relative_gain_pct,
+        relative_gain_plot,
         aspect="auto",
         cmap="RdYlGn",
-        norm=TwoSlopeNorm(vmin=-rel_gain_limit, vcenter=0.0, vmax=rel_gain_limit),
+        norm=TwoSlopeNorm(vmin=rel_lower, vcenter=0.0, vmax=rel_upper),
     )
     cbar2 = fig.colorbar(im2, ax=ax2)
     cbar2.set_label("Relative gain [%]")
-    ax2.set_title("Relative power gain by wind bin")
+    ax2.set_title("Relative gain by wind bin")
     ax2.set_xlabel("Wind speed [m/s]")
     ax2.set_ylabel("Wind direction [deg]")
 
@@ -789,18 +877,21 @@ def _plot_wake_map(
     case_title,
 ):
     n_turbines = layout_real.shape[0]
+    turbulence_value = float(turbulence_intensity if turbulence_intensity is not None else FALLBACK_WAKE_MAP_TURBULENCE_INTENSITY)
+
     viz_fmodel = FlorisModel(floris_settings["wake_model_path"])
     viz_fmodel.set(
         layout_x=layout_real[:, 0],
         layout_y=layout_real[:, 1],
         wind_speeds=[float(wind_speed)],
         wind_directions=[float(wind_direction)],
-        turbulence_intensities=[float(turbulence_intensity)],
-        yaw_angles=np.asarray([yaw_angles_deg], dtype=float),
+        turbulence_intensities=[turbulence_value],
         turbine_type=[floris_settings["turbine_type"]] * n_turbines,
         reference_wind_height=floris_settings["reference_wind_height"],
         wind_shear=floris_settings["wind_shear"],
     )
+    if yaw_angles_deg is not None:
+        viz_fmodel.set(yaw_angles=np.asarray([yaw_angles_deg], dtype=float))
     viz_fmodel.run()
 
     horizontal_plane = viz_fmodel.calculate_horizontal_plane(
@@ -810,12 +901,20 @@ def _plot_wake_map(
         findex_for_viz=0,
     )
 
-    fig, ax_map = plt.subplots(1, 1, figsize=(11, 8))
+    fig_width_in = 14.35 / 2.54
+    fig_height_in = 12.5 / 2.54
+    title_fontsize = 13
+
+    fig, ax_map = plt.subplots(1, 1, figsize=(fig_width_in, fig_height_in))
+    title_text = (
+        f"{case_title}\n"
+        f"WD={wind_direction:.1f} deg, WS={wind_speed:.1f} m/s"
+    )
 
     visualize_cut_plane(
         horizontal_plane,
         ax=ax_map,
-        title=f"{case_title} | WD={wind_direction:.1f} deg, WS={wind_speed:.1f} m/s",
+        title=title_text,
         color_bar=True,
     )
 
@@ -823,11 +922,11 @@ def _plot_wake_map(
         layout_real[:, 0],
         layout_real[:, 1],
         marker="o",
-        s=48,
+        s=40,
         facecolors="none",
         edgecolors="black",
         linewidths=1.0,
-        label="Turbines",
+        label="Turbine Locations",
     )
     _overlay_site_boundary(ax_map, site_polygon)
     _draw_wind_direction_arrow(ax_map, wind_direction)
@@ -846,11 +945,19 @@ def _plot_wake_map(
         )
 
     ax_map.set_aspect("equal")
+    ax_map.set_xlabel("East [m]", fontsize=12)
+    ax_map.set_ylabel("North [m]", fontsize=12)
+    ax_map.tick_params(axis="both", labelsize=10)
+    ax_map.tick_params(axis="x", labelrotation=45)
+    for tick in ax_map.get_xticklabels():
+        tick.set_horizontalalignment("right")
+    ax_map.set_title(title_text, fontsize=title_fontsize, pad=5)
     ax_map.grid(True, alpha=0.25)
-    ax_map.legend(loc="upper right")
+    ax_map.legend(loc="upper right", fontsize=8)
 
-    fig.subplots_adjust(left=0.06, right=0.92, top=0.92, bottom=0.08)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    fig.subplots_adjust(top=0.90)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=400, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -916,6 +1023,7 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         top_count=TOP_FREQUENCY_BINS_TO_OPTIMIZE,
     )
     grouped_top_bins_by_speed = _group_top_bins_by_speed(top_bins)
+    grouped_full_bins_by_speed = _build_full_rose_bins_by_speed(wind_rose)
     top_bin_freq_sum = float(sum(row["freq"] for row in top_bins))
     total_freq_sum = float(np.sum(coarse_freq))
     top_bin_frequency_coverage = (top_bin_freq_sum / total_freq_sum) if total_freq_sum > 0.0 else 0.0
@@ -965,7 +1073,7 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
     yaw_map_by_speed = _build_multispeed_yaw_map(
         layout_real=layout_real,
         floris_settings=floris_settings,
-        grouped_top_bins_by_speed=grouped_top_bins_by_speed,
+        grouped_top_bins_by_speed=grouped_full_bins_by_speed,
         turbulence_intensity=turbulence_intensity,
         n_turbines=n_turbines,
     )
@@ -974,7 +1082,7 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         layout_real=layout_real,
         floris_settings=floris_settings,
         yaw_map_by_speed=yaw_map_by_speed,
-        grouped_top_bins_by_speed=grouped_top_bins_by_speed,
+        grouped_top_bins_by_speed=grouped_full_bins_by_speed,
         turbulence_intensity=turbulence_intensity,
         n_turbines=n_turbines,
     )
@@ -993,14 +1101,26 @@ def run_yaw_optimization(config_path=CONFIG_PATH):
         n_turbines=n_turbines,
     )
     yaw_angles_sparse = _sparsify_yaw(yaw_angles_raw, min_effective_deg=MIN_EFFECTIVE_YAW_DEG)
-    yaw_angles_full = yaw_angles_sparse
+    yaw_angles_full = _apply_power_guard_to_schedule(
+        fmodel=fmodel,
+        wind_rose=wind_rose,
+        yaw_angles_candidate=yaw_angles_sparse,
+        turbulence_intensity=turbulence_intensity,
+        n_turbines=n_turbines,
+    )
     aep_opt = _evaluate_full_schedule_aep(
         fmodel=fmodel,
         wind_rose=wind_rose,
         yaw_angles_candidate=yaw_angles_full,
         baseline_aep=aep_baseline,
     )
-    best_alpha = 1.0
+
+    best_alpha, aep_opt, yaw_angles_full = _find_best_global_yaw_scale(
+        fmodel=fmodel,
+        wind_rose=wind_rose,
+        yaw_angles_candidate=yaw_angles_full,
+        baseline_aep=aep_baseline,
+    )
 
     fmodel.set(wind_data=wind_rose)
     fmodel.set(yaw_angles=yaw_angles_full)

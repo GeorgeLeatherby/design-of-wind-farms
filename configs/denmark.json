@@ -5,7 +5,8 @@
     "shapefile_path": "denmark\\inputs\\usable_Denmark_area.shp"
   },
   "wind": {
-    "nc_file_path": "denmark\\inputs\\mesotimeseries-Denmark-center-point.nc",
+    "nc_file_path": null,
+    "weibull_distribution_path": "denmark\\inputs\\wind_rose_data.csv",
     "ref_height_in": 10,
     "hub_height_out": 120,
     "wind_shear": 0.17,

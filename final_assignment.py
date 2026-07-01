@@ -124,7 +124,7 @@ class ResultWriter:
 
     def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_start_pos_and_eligeble):
         layout_prefix = layout_id.rsplit('_', 1)[0]
-        export_dpi = 600
+        export_dpi = 400
         fig_map.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_map_{seed}.png"), dpi=export_dpi)
         fig_wake.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_wake_{seed}.png"), dpi=export_dpi)
         fig_start_pos_and_eligeble.savefig(

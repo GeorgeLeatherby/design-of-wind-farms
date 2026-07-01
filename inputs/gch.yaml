@@ -167,7 +167,7 @@ wake:
 
     ###
     # Wake deflection model. String type.
-    deflection_model: gauss
+    deflection_model: jimenez
 
     ###
     # Wake turbulence model. String type..
