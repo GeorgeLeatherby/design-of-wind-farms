@@ -19,7 +19,7 @@ from datetime import datetime, UTC
 from netCDF4 import Dataset, num2date
 from scipy.optimize import minimize
 
-from floris import FlorisModel, TimeSeries
+from floris import FlorisModel, TimeSeries, WindRose
 from floris.flow_visualization import visualize_cut_plane
 from external.landbosse.landbosse.main_function import run_landbosse
 
@@ -231,7 +231,8 @@ class WindManager:
     and the generation of the Floris WindRose object.
     """
     def __init__(self, nc_file_path, ref_height_in, hub_height_out, wind_shear, ti,
-                 discretization_aep, discretization_pi):
+                 discretization_aep, discretization_pi, site_id=None,
+                 weibull_distribution_path=None):
         """
         Extracts, formats, and bins wind data directly upon instantiation.
         """
@@ -242,6 +243,8 @@ class WindManager:
         self.ti = ti
         self.discretization_aep = discretization_aep
         self.discretization_pi = discretization_pi
+        self.site_id = site_id
+        self.weibull_distribution_path = weibull_distribution_path
         self.dominant_wind_speed = None
         self.dominant_wind_direction = None
         self.mean_hub_wind_speed = None
@@ -275,10 +278,138 @@ class WindManager:
         self.dominant_wind_speed = 0.5 * (ws_bin_edges[i_ws] + ws_bin_edges[i_ws + 1])
         self.dominant_wind_direction = 0.5 * (wd_bin_edges[i_wd] + wd_bin_edges[i_wd + 1])
 
+    @staticmethod
+    def _normalize_csv_header(header):
+        return str(header).strip().lower().replace(' ', '').replace('.', '').replace('_', '')
+
+    def _load_weibull_csv_data(self):
+        if self.weibull_distribution_path is None:
+            raise ValueError("weibull_distribution_path must be provided when nc_file_path is null for denmark.")
+        if not os.path.exists(self.weibull_distribution_path):
+            raise FileNotFoundError(f"Weibull distribution CSV not found: {self.weibull_distribution_path}")
+
+        wind_dirs = []
+        scales = []
+        shapes = []
+        rel_freq = []
+
+        with open(self.weibull_distribution_path, mode='r', encoding='utf-8') as csv_file:
+            reader = csv.DictReader(csv_file)
+            if reader.fieldnames is None:
+                raise ValueError(
+                    f"Weibull CSV has no header row: {self.weibull_distribution_path}"
+                )
+
+            field_map = {
+                self._normalize_csv_header(name): name
+                for name in reader.fieldnames
+                if name is not None
+            }
+
+            required = {
+                'wd': None,
+                'scale': None,
+                'shape': None,
+                'relfrequency': None
+            }
+            for req_key in required:
+                if req_key in field_map:
+                    required[req_key] = field_map[req_key]
+
+            missing = [k for k, v in required.items() if v is None]
+            if missing:
+                raise ValueError(
+                    f"Weibull CSV {self.weibull_distribution_path} is missing required columns: {missing}."
+                )
+
+            for row in reader:
+                wind_dirs.append(float(row[required['wd']]))
+                scales.append(float(row[required['scale']]))
+                shapes.append(float(row[required['shape']]))
+                rel_freq.append(float(row[required['relfrequency']]))
+
+        wd_arr = np.asarray(wind_dirs, dtype=float)
+        scale_arr = np.asarray(scales, dtype=float)
+        shape_arr = np.asarray(shapes, dtype=float)
+        rel_arr = np.asarray(rel_freq, dtype=float)
+
+        if wd_arr.size == 0:
+            raise ValueError(f"Weibull CSV {self.weibull_distribution_path} contains no data rows.")
+
+        rel_sum = float(np.sum(rel_arr))
+        if rel_sum <= 0.0:
+            raise ValueError(f"Weibull CSV {self.weibull_distribution_path} has non-positive total frequency.")
+        rel_arr = rel_arr / rel_sum
+
+        return wd_arr, scale_arr, shape_arr, rel_arr
+
+    def _set_dominant_wind_bin_from_wind_rose(self, wind_rose):
+        freq_table = np.asarray(wind_rose.freq_table, dtype=float)
+        wd_vals = np.asarray(wind_rose.wind_directions, dtype=float)
+        ws_vals = np.asarray(wind_rose.wind_speeds, dtype=float)
+
+        if freq_table.size == 0:
+            self.dominant_wind_speed = float(np.mean(ws_vals)) if ws_vals.size > 0 else 0.0
+            self.dominant_wind_direction = float(np.mean(np.mod(wd_vals, 360.0))) if wd_vals.size > 0 else 0.0
+            return
+
+        max_idx = np.unravel_index(int(np.argmax(freq_table)), freq_table.shape)
+        self.dominant_wind_direction = float(wd_vals[max_idx[0]])
+        self.dominant_wind_speed = float(ws_vals[max_idx[1]])
+
+    def _generate_windrose_from_weibull(self, discretization):
+        d_ws = float(discretization.get('d_ws')) if discretization is not None else None
+        d_wd = float(discretization.get('d_wd')) if discretization is not None else None
+        if d_ws is None or d_wd is None:
+            raise ValueError("Weibull wind rose generation requires discretization with d_ws and d_wd.")
+
+        wd_arr, scale_arr, shape_arr, rel_arr = self._load_weibull_csv_data()
+
+        wb_scale = np.reshape(scale_arr, (-1, 1))
+        wb_shape = np.reshape(shape_arr, (-1, 1))
+        wb_wd_freq = np.reshape(rel_arr, (-1, 1))
+
+        wb_ws = np.arange(0.0, 50.0 + d_ws, d_ws)
+        ws_low = np.arange(np.min(wb_ws) - d_ws / 2.0, np.max(wb_ws) + d_ws / 2.0, d_ws)
+        ws_high = ws_low + d_ws
+        ws_low[ws_low < 0.0] = 0.0
+        ws_high[ws_high < 0.0] = 0.0
+
+        cdf_high = 1.0 - np.exp(-((ws_high / wb_scale) ** wb_shape))
+        cdf_low = 1.0 - np.exp(-((ws_low / wb_scale) ** wb_shape))
+        freq_grid_raw = wb_wd_freq * (cdf_high - cdf_low)
+        freq_grid_raw = np.nan_to_num(freq_grid_raw, nan=0.0, posinf=0.0, neginf=0.0)
+
+        ti_table = np.full(freq_grid_raw.shape, float(self.ti), dtype=float)
+        wind_rose = WindRose(
+            wind_directions=np.asarray(wd_arr, dtype=float),
+            wind_speeds=np.asarray(wb_ws, dtype=float),
+            ti_table=ti_table,
+            freq_table=np.asarray(freq_grid_raw, dtype=float)
+        )
+        wind_rose = wind_rose.upsample(wd_step=d_wd, ws_step=d_ws)
+        return wind_rose
+
     def _generate_windrose(self, discretization):
         """
         Internal method to process the .nc file and return the windrose object.
         """
+        # Only denmark is allowed to switch to Weibull-based wind rose generation.
+        if self.nc_file_path is None:
+            if str(self.site_id).strip().lower() == 'denmark':
+                wind_rose = self._generate_windrose_from_weibull(discretization)
+
+                freq_table = np.asarray(wind_rose.freq_table, dtype=float)
+                ws_vals = np.asarray(wind_rose.wind_speeds, dtype=float)
+                ws_marginal = np.sum(freq_table, axis=0)
+                self.mean_hub_wind_speed = float(np.dot(ws_vals, ws_marginal))
+                self._set_dominant_wind_bin_from_wind_rose(wind_rose)
+                return wind_rose
+
+            raise ValueError(
+                f"nc_file_path is null for site '{self.site_id}'. Only denmark may use weibull_distribution_path."
+            )
+
         d_ws = discretization.get('d_ws') if discretization is not None else None
         d_wd = discretization.get('d_wd') if discretization is not None else None
         nc_dataset = Dataset(self.nc_file_path, mode='r')
@@ -1638,7 +1769,9 @@ if __name__ == "__main__":
             wind_shear=wind_config.get('wind_shear') if wind_config is not None else None,
             ti=wind_config.get('ti') if wind_config is not None else None,
             discretization_aep=aep_discretization_config,
-            discretization_pi=pi_discretization_config
+            discretization_pi=pi_discretization_config,
+            site_id=site_id,
+            weibull_distribution_path=wind_config.get('weibull_distribution_path') if wind_config is not None else None
         )
         
         floris_mgr = FlorisManager(

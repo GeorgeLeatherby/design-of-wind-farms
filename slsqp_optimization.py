@@ -144,6 +144,8 @@ def build_managers(config):
         ti=wind_config.get("ti") if wind_config is not None else None,
         discretization_aep=aep_discretization_config,
         discretization_pi=pi_discretization_config,
+        site_id=site_id,
+        weibull_distribution_path=wind_config.get("weibull_distribution_path") if wind_config is not None else None,
     )
 
     floris_mgr = FlorisManager(
