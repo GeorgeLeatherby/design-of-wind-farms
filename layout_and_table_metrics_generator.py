@@ -18,8 +18,8 @@ from external.landbosse.landbosse.main_function import run_landbosse
 from slsqp_optimization import build_managers, load_config
 
 
-CONFIG_PATH = "configs/schlegelmuehle.json"
-LAYOUT_ID = "L_26_06_18_18_13_N14_6576581080151974730"
+CONFIG_PATH = "configs/kitschenrain.json"
+LAYOUT_ID = "L_26_07_01_10_11_N17_17063367025727692224"
 
 
 class LayoutFigureResultWriter:
