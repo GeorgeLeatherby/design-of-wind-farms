@@ -122,11 +122,15 @@ class ResultWriter:
         with open(path, mode='w', encoding='utf-8') as file_obj:
             json.dump(data, file_obj, indent=2)
 
-    def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_table):
+    def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_start_pos_and_eligable):
         layout_prefix = layout_id.rsplit('_', 1)[0]
-        fig_map.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_map_{seed}.png"), dpi=150)
-        fig_wake.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_wake_{seed}.png"), dpi=150)
-        fig_table.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_table_{seed}.png"), dpi=150)
+        export_dpi = 600
+        fig_map.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_map_{seed}.png"), dpi=export_dpi)
+        fig_wake.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_wake_{seed}.png"), dpi=export_dpi)
+        fig_start_pos_and_eligable.savefig(
+            os.path.join(self.figures_dir, f"{layout_prefix}_start_pos_and_eligable_{seed}.png"),
+            dpi=export_dpi
+        )
 
     def update_ranking(self, ranking_entry):
         def normalize_row(row):
@@ -390,6 +394,7 @@ class FlorisManager:
         self,
         layout_real,
         site_polygon=None,
+        seed=None,
         wind_speed=None,
         wind_direction=None,
         turbulence_intensity=0.06,
@@ -429,13 +434,21 @@ class FlorisManager:
             findex_for_viz=0
         )
 
-        fig, ax = plt.subplots(1, 1, figsize=(9, 7))
+        # A4 landscape target (29.7 cm) with 2 cm outer margins and 1 cm gap between 2 figures:
+        # each figure width = (29.7 - 4 - 1) / 2 = 12.35 cm.
+        # Height is set slightly smaller (10.5 cm) to give title/legend more breathing room.
+        fig_width_in = 12.35 / 2.54
+        fig_height_in = 10.5 / 2.54
+        seed_line = f"\nSeed: {seed}" if seed is not None else ""
+
+        fig, ax = plt.subplots(1, 1, figsize=(fig_width_in, fig_height_in))
         visualize_cut_plane(
             horizontal_plane,
             ax=ax,
             title=(
                 f"Wake Top View at Hub Height ({self.reference_wind_height:.0f} m), "
                 f"WD={wind_direction:.1f} deg, WS={wind_speed:.1f} m/s"
+                f"{seed_line}"
             ),
             color_bar=True
         )
@@ -461,7 +474,11 @@ class FlorisManager:
                 ax.plot(site_x, site_y, color='white', linewidth=1.6, alpha=0.95, label='Site Boundary')
 
         ax.set_aspect('equal')
-        ax.legend(loc='upper right')
+        ax.set_xlabel('East [m]', fontsize=12)
+        ax.set_ylabel('North [m]', fontsize=12)
+        ax.tick_params(axis='both', labelsize=10)
+        ax.title.set_fontsize(14)
+        ax.legend(loc='upper right', fontsize=10)
         ax.grid(True, alpha=0.25)
         fig.tight_layout()
         return fig
@@ -1394,18 +1411,19 @@ class LayoutOptimizer:
         eff = (aep_wake / aep_nw) * 100
         cf = aep_wake / (self.econ.rated_power_kw * num_turbines * 1000 * 24 * 365)
 
-        # Figure 1 layout: map on the left and KPI text on the right with ~1 cm gap.
-        fig1 = plt.figure(figsize=(12, 8))
-        gap_fraction = (1.0 / 2.54) / 12.0  # 1 cm converted to figure-width fraction.
-        left_panel = [0.08, 0.12, 0.58, 0.80]
-        text_panel = [
-            left_panel[0] + left_panel[2] + gap_fraction,
-            0.12,
-            0.30 - gap_fraction,
-            0.80
-        ]
-        ax1 = fig1.add_axes(left_panel)
-        ax_text = fig1.add_axes(text_panel)
+        # A4 landscape target (29.7 cm) with 2 cm outer margins and 1 cm gap between 2 figures:
+        # each figure width = (29.7 - 4 - 1) / 2 = 12.35 cm.
+        # Height is set slightly smaller (10.5 cm) to give title/legend more breathing room.
+        fig_width_in = 12.35 / 2.54
+        fig_height_in = 10.5 / 2.54
+        title_fontsize = 14
+        axis_fontsize = 12
+        legend_fontsize = 10
+        tick_fontsize = 10
+        seed_line = f"\nSeed: {seed}" if seed is not None else ""
+
+        # Plot 1: Site map only (without KPI text table panel).
+        fig1, ax1 = plt.subplots(1, 1, figsize=(fig_width_in, fig_height_in))
         
         # Handle plotting for both single Polygons and MultiPolygons safely
         if self.site.site_polygon.geom_type == 'MultiPolygon':
@@ -1433,68 +1451,23 @@ class LayoutOptimizer:
         )
         
         ax1.set_aspect('equal')
-        ax1.set_xlabel('East [m]')
-        ax1.set_ylabel('North [m]')
-        ax1.set_title(f'Optimal Wind Farm (N={num_turbines})')
-        ax1.legend()
+        ax1.set_xlabel('East [m]', fontsize=axis_fontsize)
+        ax1.set_ylabel('North [m]', fontsize=axis_fontsize)
+        ax1.set_title(f'Optimal Wind Farm (N={num_turbines}){seed_line}', fontsize=title_fontsize)
+        ax1.tick_params(axis='both', labelsize=tick_fontsize)
+        ax1.legend(fontsize=legend_fontsize)
         ax1.grid(True)
-
-        ax_text.axis('off')
-
-        irr_text = "n/a" if np.isnan(irr) else f"{irr * 100.0:.4f}"
-        
-        results_text = (
-            f"--- OPTIMUM FOUND ---\n"
-            f"Turbines: {num_turbines} ({(num_turbines * 3.37):.2f} MW)\n"
-            f"Total Compute Time: {total_time:.2f} s\n"
-            f"Final PI: {pi:.4f}\n"
-            f"Final LCoE: {lcoe:.2f} $/MWh\n"
-            f"Final AEP: {aep_wake/1e9:.4f} GWh\n"
-            f"IRR: {irr_text}\n"
-            f"Farm Efficiency: {eff:.2f}%\n"
-            f"Capacity Factor: {cf:.4f}"
-        )
-
-        ax_text.text(
-            0.02,
-            0.98,
-            results_text,
-            va='top',
-            ha='left',
-            fontsize=11,
-            bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='gray', alpha=0.9)
-        )
+        fig1.tight_layout()
 
         # Plot 2: FLORIS top-view wake map for the final layout.
-        fig2 = self.floris.plot_final_wake_top_view(final_real, site_polygon=self.site.site_polygon)
+        fig2 = self.floris.plot_final_wake_top_view(
+            final_real,
+            site_polygon=self.site.site_polygon,
+            seed=seed
+        )
 
-        # Plot 3: Coordinates table + tier-1 viable edge candidates diagnostics.
-        fig3, (ax_tbl, ax_map) = plt.subplots(
-            2,
-            1,
-            figsize=(13, 12),
-            gridspec_kw={'height_ratios': [2, 3]}
-        )
-        ax_tbl.axis('off')
-        table_rows = [
-            [
-                i + 1,
-                f"{init_real[i, 0]:.2f}",
-                f"{init_real[i, 1]:.2f}",
-                f"{final_real[i, 0]:.2f}",
-                f"{final_real[i, 1]:.2f}"
-            ]
-            for i in range(num_turbines)
-        ]
-        table = ax_tbl.table(
-            cellText=table_rows,
-            colLabels=['Turbine', 'Start X [m]', 'Start Y [m]', 'Final X [m]', 'Final Y [m]'],
-            loc='center'
-        )
-        table.auto_set_font_size(False)
-        table.set_fontsize(8)
-        table.scale(1.0, 1.2)
-        ax_tbl.set_title('Turbine Coordinates: Start vs Final (Best Solution)')
+        # Plot 3: Start/final positions + tier-1 viable edge candidates diagnostics (without table).
+        fig3, ax_map = plt.subplots(1, 1, figsize=(fig_width_in, fig_height_in))
 
         if self.site.site_polygon.geom_type == 'MultiPolygon':
             for geom in self.site.site_polygon.geoms:
@@ -1522,15 +1495,20 @@ class LayoutOptimizer:
         ax_map.scatter(final_real[:, 0], final_real[:, 1], marker='o', s=35, color='green', label='Final Turbines')
         ax_map.scatter(self.econ.substation_coord[0, 0], self.econ.substation_coord[0, 1], marker='s', color='orange', s=80, label='Substation')
         ax_map.set_aspect('equal')
-        ax_map.set_xlabel('East [m]')
-        ax_map.set_ylabel('North [m]')
-        ax_map.set_title('Tier-1 Viable Boundary Candidates and Best Layout Coordinates')
+        ax_map.set_xlabel('East [m]', fontsize=axis_fontsize)
+        ax_map.set_ylabel('North [m]', fontsize=axis_fontsize)
+        ax_map.set_title(
+            f'Tier-1 Viable Boundary Candidates and Best Layout Coordinates{seed_line}',
+            fontsize=title_fontsize
+        )
+        ax_map.tick_params(axis='both', labelsize=tick_fontsize)
         ax_map.grid(True, alpha=0.35)
-        ax_map.legend(loc='best')
+        ax_map.legend(loc='best', fontsize=legend_fontsize)
         fig3.tight_layout()
 
         if result_writer is not None and layout_id is not None and seed is not None and site_id is not None:
             installed_mw = (self.econ.rated_power_kw / 1000.0) * num_turbines
+            irr_text = "n/a" if np.isnan(irr) else f"{irr * 100.0:.4f}"
             payload = {
                 'site_id': site_id,
                 'timestamp': datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z'),
