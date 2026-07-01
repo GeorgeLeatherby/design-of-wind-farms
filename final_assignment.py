@@ -1577,7 +1577,7 @@ class LayoutOptimizer:
 
 if __name__ == "__main__":
     
-    CONFIG_PATH = "configs/kitschenrain.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
+    CONFIG_PATH = "configs/waidmannsheil.json" # Hier den Pfad zur gewünschten Konfigurationsdatei angeben
 
     with open(CONFIG_PATH, mode='r', encoding='utf-8') as config_file:
         config = json.load(config_file)
@@ -1663,8 +1663,8 @@ if __name__ == "__main__":
             econ_manager=econ_mgr,
             min_separation_m=min_distance_m,
             opt_method=optimization_config.get('opt_method') if optimization_config is not None else None,
-            aep_maxiter=optimization_config.get('aep_maxiter', 500) if optimization_config is not None else 100,
-            pi_maxiter=optimization_config.get('pi_maxiter', 200) if optimization_config is not None else 200
+            aep_maxiter=optimization_config.get('aep_maxiter', 600) if optimization_config is not None else 100,
+            pi_maxiter=optimization_config.get('pi_maxiter', 300) if optimization_config is not None else 200
         )
         
         # Execute Top-Level Loop

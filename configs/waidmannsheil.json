@@ -28,7 +28,7 @@
   "optimization": {
     "target_min_mw": 56,
     "target_max_mw": 60,
-    "num_random_starts": 1,
+    "num_random_starts": 40,
     "num_aep_layouts_for_pi": 3,
     "min_distance_multiplier": 2,
     "opt_method": "COBYLA"
