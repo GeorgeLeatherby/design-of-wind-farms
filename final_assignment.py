@@ -122,13 +122,13 @@ class ResultWriter:
         with open(path, mode='w', encoding='utf-8') as file_obj:
             json.dump(data, file_obj, indent=2)
 
-    def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_start_pos_and_eligable):
+    def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_start_pos_and_eligeble):
         layout_prefix = layout_id.rsplit('_', 1)[0]
         export_dpi = 600
         fig_map.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_map_{seed}.png"), dpi=export_dpi)
         fig_wake.savefig(os.path.join(self.figures_dir, f"{layout_prefix}_wake_{seed}.png"), dpi=export_dpi)
-        fig_start_pos_and_eligable.savefig(
-            os.path.join(self.figures_dir, f"{layout_prefix}_start_pos_and_eligable_{seed}.png"),
+        fig_start_pos_and_eligeble.savefig(
+            os.path.join(self.figures_dir, f"{layout_prefix}_start_pos_and_eligeble_{seed}.png"),
             dpi=export_dpi
         )
 
@@ -436,9 +436,9 @@ class FlorisManager:
 
         # A4 landscape target (29.7 cm) with 2 cm outer margins and 1 cm gap between 2 figures:
         # each figure width = (29.7 - 4 - 1) / 2 = 12.35 cm.
-        # Increased by 1 cm in both directions to enlarge graph area.
-        fig_width_in = 13.35 / 2.54
-        fig_height_in = 11.5 / 2.54
+        # Increased by 2 cm in both directions to enlarge graph area.
+        fig_width_in = 14.35 / 2.54
+        fig_height_in = 12.5 / 2.54
         title_fontsize = 13
         seed_fontsize = 11
 
@@ -477,9 +477,9 @@ class FlorisManager:
         ax.set_xlabel('East [m]', fontsize=12)
         ax.set_ylabel('North [m]', fontsize=12)
         ax.tick_params(axis='both', labelsize=10)
-        ax.tick_params(axis='x', labelrotation=-45)
+        ax.tick_params(axis='x', labelrotation=45)
         for tick in ax.get_xticklabels():
-            tick.set_horizontalalignment('left')
+            tick.set_horizontalalignment('right')
         ax.title.set_fontsize(title_fontsize)
         if seed is not None:
             ax.text(
@@ -491,7 +491,7 @@ class FlorisManager:
                 va='bottom',
                 fontsize=seed_fontsize
             )
-        ax.legend(loc='upper right', fontsize=10)
+        ax.legend(loc='upper right', fontsize=8)
         ax.grid(True, alpha=0.25)
         fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
         return fig
@@ -1426,9 +1426,9 @@ class LayoutOptimizer:
 
         # A4 landscape target (29.7 cm) with 2 cm outer margins and 1 cm gap between 2 figures:
         # each figure width = (29.7 - 4 - 1) / 2 = 12.35 cm.
-        # Increased by 1 cm in both directions to enlarge graph area.
-        fig_width_in = 13.35 / 2.54
-        fig_height_in = 11.5 / 2.54
+        # Increased by 2 cm in both directions to enlarge graph area.
+        fig_width_in = 14.35 / 2.54
+        fig_height_in = 12.5 / 2.54
         title_fontsize = 13
         seed_fontsize = 11
         axis_fontsize = 12
@@ -1468,9 +1468,9 @@ class LayoutOptimizer:
         ax1.set_ylabel('North [m]', fontsize=axis_fontsize)
         ax1.set_title(f'Optimal Wind Farm (N={num_turbines})', fontsize=title_fontsize)
         ax1.tick_params(axis='both', labelsize=tick_fontsize)
-        ax1.tick_params(axis='x', labelrotation=-45)
+        ax1.tick_params(axis='x', labelrotation=45)
         for tick in ax1.get_xticklabels():
-            tick.set_horizontalalignment('left')
+            tick.set_horizontalalignment('right')
         if seed is not None:
             ax1.text(
                 0.5,
@@ -1528,9 +1528,9 @@ class LayoutOptimizer:
             fontsize=title_fontsize
         )
         ax_map.tick_params(axis='both', labelsize=tick_fontsize)
-        ax_map.tick_params(axis='x', labelrotation=-45)
+        ax_map.tick_params(axis='x', labelrotation=45)
         for tick in ax_map.get_xticklabels():
-            tick.set_horizontalalignment('left')
+            tick.set_horizontalalignment('right')
         if seed is not None:
             ax_map.text(
                 0.5,
@@ -1565,6 +1565,21 @@ class LayoutOptimizer:
                 'initial_coordinates_m': init_real.tolist(),
                 'final_coordinates_m': final_real.tolist()
             }
+            if init_debug is not None:
+                payload['init_debug'] = {
+                    'edge_candidates_norm': np.asarray(
+                        init_debug.get('edge_candidates_norm', np.empty((0, 2), dtype=float)),
+                        dtype=float
+                    ).tolist(),
+                    'viable_edge_candidates_norm': np.asarray(
+                        init_debug.get('viable_edge_candidates_norm', np.empty((0, 2), dtype=float)),
+                        dtype=float
+                    ).tolist(),
+                    'selected_edge_positions_norm': np.asarray(
+                        init_debug.get('selected_edge_positions_norm', np.empty((0, 2), dtype=float)),
+                        dtype=float
+                    ).tolist()
+                }
             result_writer.save_layout_json(layout_id, payload)
             result_writer.save_figures(layout_id, seed, fig1, fig2, fig3)
             ranking_entry = {

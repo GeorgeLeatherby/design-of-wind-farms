@@ -71,20 +71,21 @@ class LayoutFigureResultWriter:
             writer.writeheader()
             writer.writerows(rows)
 
-    def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_table):
+    def save_figures(self, layout_id, seed, fig_map, fig_wake, fig_start_pos_and_eligeble):
         layout_prefix = layout_id.rsplit("_", 1)[0]
+        export_dpi = 600
         map_path = os.path.join(self.figures_dir, f"{layout_prefix}_map_{seed}.png")
         wake_path = os.path.join(self.figures_dir, f"{layout_prefix}_wake_{seed}.png")
-        table_path = os.path.join(self.figures_dir, f"{layout_prefix}_table_{seed}.png")
+        start_pos_path = os.path.join(self.figures_dir, f"{layout_prefix}_start_pos_and_eligeble_{seed}.png")
 
-        fig_map.savefig(map_path, dpi=150)
-        fig_wake.savefig(wake_path, dpi=150)
-        fig_table.savefig(table_path, dpi=150)
+        fig_map.savefig(map_path, dpi=export_dpi)
+        fig_wake.savefig(wake_path, dpi=export_dpi)
+        fig_start_pos_and_eligeble.savefig(start_pos_path, dpi=export_dpi)
 
         print("Saved figure files:")
         print(f" - {map_path}")
         print(f" - {wake_path}")
-        print(f" - {table_path}")
+        print(f" - {start_pos_path}")
 
 
 def _load_saved_layout_payload(result_writer, layout_id):
@@ -115,7 +116,22 @@ def _load_saved_layout_payload(result_writer, layout_id):
         except ValueError:
             seed = 0
 
-    return payload, final_coordinates_m, initial_coordinates_m, num_turbines, int(seed)
+    init_debug_payload = payload.get("init_debug")
+    init_debug = None
+    if isinstance(init_debug_payload, dict):
+        init_debug = {
+            "edge_candidates_norm": np.asarray(
+                init_debug_payload.get("edge_candidates_norm", []), dtype=float
+            ),
+            "viable_edge_candidates_norm": np.asarray(
+                init_debug_payload.get("viable_edge_candidates_norm", []), dtype=float
+            ),
+            "selected_edge_positions_norm": np.asarray(
+                init_debug_payload.get("selected_edge_positions_norm", []), dtype=float
+            ),
+        }
+
+    return payload, final_coordinates_m, initial_coordinates_m, num_turbines, int(seed), init_debug
 
 
 def _build_financial_tables(econ_mgr, layout_real, num_turbines, aep_wake_wh, energy_rose_wh, landbosse_df):
@@ -258,6 +274,7 @@ def regenerate_layout_figures_and_metrics(config_path=CONFIG_PATH, layout_id=LAY
         initial_coordinates_m,
         num_turbines,
         seed,
+        init_debug,
     ) = _load_saved_layout_payload(result_writer, layout_id)
 
     final_layout_norm = site_mgr.normalize_coords(final_coordinates_m)
@@ -268,7 +285,7 @@ def regenerate_layout_figures_and_metrics(config_path=CONFIG_PATH, layout_id=LAY
     optimizer.plot_final_solution(
         final_layout_norm,
         initial_layout_norm,
-        init_debug=None,
+        init_debug=init_debug,
         num_turbines=num_turbines,
         total_time=0.0,
         result_writer=layout_writer,
