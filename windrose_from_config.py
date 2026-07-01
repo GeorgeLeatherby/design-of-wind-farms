@@ -16,7 +16,6 @@ import json
 import os
 
 import matplotlib.pyplot as plt
-import numpy as np
 
 from final_assignment import WindManager
 
@@ -82,21 +81,6 @@ def _infer_data_source_text(wind_cfg):
     return "Data source: unknown (neither nc_file_path nor weibull_distribution_path is set)"
 
 
-def _plot_wind_rose_freq(ax, wind_rose, title, source_text):
-    wd = np.asarray(wind_rose.wind_directions, dtype=float)
-    ws = np.asarray(wind_rose.wind_speeds, dtype=float)
-    freq = np.asarray(wind_rose.freq_table, dtype=float)
-
-    mesh = ax.pcolormesh(wd, ws, freq.T, shading="auto")
-    cbar = plt.colorbar(mesh, ax=ax)
-    cbar.set_label("Relative frequency [-]")
-
-    ax.set_xlabel("Wind direction [deg]")
-    ax.set_ylabel("Wind speed [m/s]")
-    ax.set_title(f"{title}\n{source_text}")
-    ax.grid(True, alpha=0.25)
-
-
 def generate_windrose_graphs(config_path, output_dir=None, show=False):
     config = _load_config(config_path)
     site_cfg = config.get("site") if config is not None else None
@@ -124,12 +108,12 @@ def generate_windrose_graphs(config_path, output_dir=None, show=False):
         d_ws = discret.get("d_ws") if isinstance(discret, dict) else "?"
         rose = rose_by_label[label]
 
-        fig, ax = plt.subplots(figsize=(10, 6))
-        _plot_wind_rose_freq(
-            ax=ax,
-            wind_rose=rose,
-            title=f"Wind Rose ({label.upper()} discretization: d_wd={d_wd}, d_ws={d_ws})",
-            source_text=source_text,
+        # Use FLORIS built-in plotting on the WindRose object.
+        rose.plot(ws_step=d_ws, wd_step=d_wd)
+        fig = plt.gcf()
+        ax = plt.gca()
+        ax.set_title(
+            f"Wind Rose ({label.upper()} discretization: d_wd={d_wd}, d_ws={d_ws})\n{source_text}"
         )
         fig.tight_layout()
 
